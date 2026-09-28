@@ -1326,6 +1326,477 @@ html&gt;body{padding:0}&lt;/style&gt;
   syncTheme();
 })();
 &lt;/script&gt;
+&lt;script id=&quot;aod-parallel-compiler&quot;&gt;
+// Compile staggered X/Z rounds while retaining within-fibre permutations.
+// Check-to-atom assignments change only after measurement and reset.
+// H/V refer to the default display (physical y/x); camera rotation is independent.
+var AodParallel = (() =&gt; {
+  const eps=1e-5, travel=d=&gt;2*Math.sqrt(Math.abs(d)/5500)*1000;
+  function compile(full, rounds=3, resetUs=0, resourceSchedule=true, routeSchedule=true) {
+    if(!Number.isInteger(rounds)||rounds&lt;1||rounds&gt;20||!Number.isFinite(resetUs)||resetUs&lt;0)throw Error(&#x27;Invalid pipeline settings&#x27;);
+    const groups=new Map(), sourcePositions=full.atoms.map(a=&gt;a.slice(0,2));
+    function key(bank,basis,phase){return bank+&#x27;|&#x27;+basis+&#x27;|&#x27;+phase;}
+    for(const g of full.gates){
+      const [check,data]=g.edges[0];
+      const origin=i=&gt;{const a=full.atoms[i],[w,h]=full.layout.fibre_shape;return [a[0]-12*(a[5]%w),a[1]-12*(full.layout.placement===&#x27;integer-CRT&#x27;?a[5]%h:Math.floor(a[5]/w))];};
+      const a=origin(check),b=origin(data);
+      const phase=g.details.some(d=&gt;d.region===&#x27;interface&#x27;)?&#x27;I&#x27;:Math.abs(a[1]-b[1])&gt;Math.abs(a[0]-b[0])?&#x27;H&#x27;:&#x27;V&#x27;;
+      const k=key(g.bank,g.basis,phase);
+      if(!groups.has(k))groups.set(k,{bank:g.bank,basis:g.basis,phase,gates:[],tasks:[],moves:[]});
+      groups.get(k).gates.push(g);
+    }
+    for(const s of groups.values()){
+      s.start=Math.min(...s.gates.map(g=&gt;g.prepStart));s.end=Math.max(...s.gates.map(g=&gt;g.returnEnd));
+      s.ids=full.atoms.flatMap((a,i)=&gt;a[2]===(s.basis===&#x27;X&#x27;?1:2)&amp;&amp;full.banks.find(b=&gt;b.id===s.bank).modules.includes(a[3])?[i]:[]);
+      s.before=new Map(s.ids.map(i=&gt;[i,[0,0]]));
+    }
+    const taskGroup=new Map();
+    full.tasks.forEach((t,i)=&gt;{
+      const s=[...groups.values()].find(s=&gt;full.banks.find(b=&gt;b.id===s.bank).block===t.block&amp;&amp;s.basis===t.basis&amp;&amp;t.start&gt;=s.start-eps&amp;&amp;t.end&lt;=s.end+eps);
+      if(!s)throw Error(&#x27;Unassigned sweep task&#x27;);s.tasks.push([i,t]);taskGroup.set(i,s);
+    });
+    for(const m of full.moves){
+      const s=taskGroup.get(m[6]);s.moves.push(m);
+      for(const q of groups.values())if(q.bank===s.bank&amp;&amp;q.basis===s.basis){
+        for(const id of m[5]){
+          if(m[0]+m[1]&lt;=q.start+eps){const p=q.before.get(id);p[0]+=m[2];p[1]+=m[3];}
+        }
+      }
+    }
+    if(routeSchedule)for(const s of groups.values())continuousSparseSweep(s,full);
+    const banks=full.banks.flatMap(b=&gt;[&#x27;X&#x27;,&#x27;Z&#x27;].map((basis,j)=&gt;({
+      ...b,id:2*b.id+j,block:b.block+&#x27;-&#x27;+basis,name:b.name+&#x27; &#x27;+basis,basis,
+      pairs:b.pairs.map(p=&gt;2*b.id*full.pairsPerCode+j*full.pairsPerCode+(p-full.banks.find(x=&gt;x.id===b.id).pairs[0]))
+    })));
+    const bankFor=s=&gt;banks.find(b=&gt;b.id===2*s.bank+(s.basis===&#x27;Z&#x27;?1:0));
+    const moves=[],tasks=[],gates=[],stages=[],readouts=[],marks=[];
+    const positions=full.atoms.map(a=&gt;a.slice(0,2));
+    const assignment=full.atoms.map((_,i)=&gt;i),roundAssignments=[];
+    const fibreIds=new Map();full.atoms.forEach((a,i)=&gt;{if(a[2]){const k=[a[2],a[3],a[4]].join(&#x27;:&#x27;);if(!fibreIds.has(k))fibreIds.set(k,[]);fibreIds.get(k).push(i);}});
+    function recordAssignments(basis,round){roundAssignments.push({basis,round,checks:full.atoms.flatMap((a,i)=&gt;a[2]===(basis===&#x27;X&#x27;?1:2)?[[i,assignment[i]]]:[])});}
+    recordAssignments(&#x27;X&#x27;,1);recordAssignments(&#x27;Z&#x27;,1);
+    let clock=0,connectorUs=0;
+    function appendMove(ids,dx,dy,t,bank,basis,round,label,kind=&#x27;permutation&#x27;){
+      const d=travel(Math.hypot(dx,dy));if(d&lt;eps)return t;
+      const id=tasks.length;
+      tasks.push({start:t,end:t+d,label,pairs:[bank.pairs[0]],kind,basis,block:bank.block,factor:&#x27;reset&#x27;,round,finalRestoration:true});
+      moves.push([t,d,dx,dy,bank.pairs[0],ids,id]);
+      for(const i of ids){positions[i][0]+=dx;positions[i][1]+=dy;}
+      connectorUs+=d;return t+d;
+    }
+    // Final-only physical restoration, one fibre at a time. Equal-shift columns
+    // are moved as a Cartesian group; wrapped rows are returned together.
+    // Restores the original physical atom labels after all readouts are finished.
+    function align(s,offsets,t,round){
+      const bank=bankFor(s),[w,h]=full.layout.fibre_shape;
+      const fibres=new Map();for(const i of s.ids){const a=full.atoms[i],k=a[3]+&#x27;:&#x27;+a[4];if(!fibres.has(k))fibres.set(k,[]);fibres.get(k).push(i);}
+      for(const ids of fibres.values()){
+        const target=i=&gt;[full.atoms[i][0]+(offsets?.get(i)?.[0]||0),full.atoms[i][1]+(offsets?.get(i)?.[1]||0)];
+        const label=&#x27;Final restoration · &#x27;+s.basis+&#x27; labelled fibre positions&#x27;;
+        const cx=ids.reduce((v,i)=&gt;v+target(i)[0]-positions[i][0],0)/ids.length,cy=ids.reduce((v,i)=&gt;v+target(i)[1]-positions[i][1],0)/ids.length;
+        if(Math.abs(cx)&gt;eps)t=appendMove(ids,cx,0,t,bank,s.basis,round,label,&#x27;translation&#x27;);
+        if(Math.abs(cy)&gt;eps)t=appendMove(ids,0,cy,t,bank,s.basis,round,label,&#x27;translation&#x27;);
+        const x0=Math.min(...ids.map(i=&gt;target(i)[0])),y0=Math.min(...ids.map(i=&gt;target(i)[1]));
+        const col=i=&gt;Math.round((positions[i][0]-x0)/12);
+        const dx=((Math.round((target(ids[0])[0]-positions[ids[0]][0])/12)%w)+w)%w;
+        if(dx){
+          t=appendMove(ids,12*dx,0,t,bank,s.basis,round,label);
+          t=appendMove(ids.filter(i=&gt;col(i)&gt;=w),-12*w,0,t,bank,s.basis,round,label);
+        }
+        const shifts=new Map();
+        for(let x=0;x&lt;w;x++){
+          const column=ids.filter(i=&gt;col(i)===x);if(!column.length)continue;
+          const dy=((Math.round((target(column[0])[1]-positions[column[0]][1])/12)%h)+h)%h;
+          if(dy){if(!shifts.has(dy))shifts.set(dy,[]);shifts.get(dy).push(...column);}
+        }
+        // CRT columns share one shift, so move the whole fibre together and
+        // return its wrapped rows together. Row-major carry groups stay separate.
+        for(const [dy,group] of shifts){
+          t=appendMove(group,0,12*dy,t,bank,s.basis,round,label);
+          t=appendMove(group.filter(i=&gt;positions[i][1]&gt;=y0+12*h-eps),0,-12*h,t,bank,s.basis,round,label);
+        }
+        if(ids.some(i=&gt;Math.hypot(positions[i][0]-target(i)[0],positions[i][1]-target(i)[1])&gt;eps))throw Error(&#x27;Fibre alignment failed &#x27;+JSON.stringify({mode:full.mode,lift:full.lift,phase:s.phase,basis:s.basis,bank:s.bank,offsets:!!offsets,atoms:ids.map(i=&gt;[i,positions[i],target(i)])}));
+      }
+      return t;
+    }
+    function appendSegment(s,start,round){
+      const bank=bankFor(s),offset=start-s.start,ids=new Map();
+      // A permutation is carried across sweep boundaries, not physically undone.
+      // After each readout, fresh checks are assigned to the atoms occupying the
+      // template&#x27;s initial slots. That assignment is fixed for their whole round.
+      for(const i of s.ids){const p=positions[assignment[i]],d=s.before.get(i),a=full.atoms[i];
+        if(Math.hypot(p[0]-a[0]-d[0],p[1]-a[1]-d[1])&gt;eps)throw Error(&#x27;Sweep continuity failed &#x27;+JSON.stringify({mode:full.mode,lift:full.lift,basis:s.basis,phase:s.phase,bank:s.bank,round,i,p,expected:[a[0]+d[0],a[1]+d[1]]}));}
+      const remapCell=c=&gt;({...c,...(c.checkFibres?{checkFibres:c.checkFibres.map(i=&gt;assignment[i])}:{})});
+      for(const [old,task] of s.tasks){ids.set(old,tasks.length);tasks.push({...task,start:task.start+offset,end:task.end+offset,
+        label:&#x27;R&#x27;+round+&#x27; · &#x27;+task.label,round,block:bank.block,pipelinePhase:s.phase,pairs:task.pairs.map(p=&gt;bank.pairs[full.banks.find(b=&gt;b.id===s.bank).pairs.indexOf(p)]),
+        localPhases:task.localPhases?.map(p=&gt;({...p,start:p.start+offset,end:p.end+offset}))});}
+      for(const m of s.moves){
+        moves.push([m[0]+offset,m[1],m[2],m[3],bank.pairs[full.banks.find(b=&gt;b.id===s.bank).pairs.indexOf(m[4])],m[5].map(i=&gt;assignment[i]),ids.get(m[6])]);
+        for(const logical of m[5]){const i=assignment[logical];positions[i][0]+=m[2];positions[i][1]+=m[3];}
+      }
+      for(const g of s.gates)gates.push({...g,t:g.t+offset,end:g.end+offset,prepStart:g.prepStart+offset,returnEnd:g.returnEnd+offset,
+        label:&#x27;R&#x27;+round+&#x27; &#x27;+g.basis+&#x27; · &#x27;+g.label,round,bank:bank.id,block:bank.block,pipelinePhase:s.phase,
+        logicalEdges:g.edges,edges:g.edges.map(([a,b])=&gt;[assignment[a],b]),
+        algebra:g.algebra.map(a=&gt;({...a,active:a.active.map(remapCell),skipped:a.skipped.map(remapCell)}))});
+      return s.end+offset;
+    }
+    function stage(requests,label){
+      const start=clock;let end=start;
+      for(const [basis,phase,round] of requests)for(const s of groups.values())if(s.basis===basis&amp;&amp;s.phase===phase)end=Math.max(end,appendSegment(s,start,round));
+      if(end&gt;start+eps){stages.push({start,end,label,kind:&#x27;motion&#x27;});marks.push({t:start,label});}clock=end;
+    }
+    function readout(basis,round){
+      const label=&#x27;R&#x27;+round+&#x27; &#x27;+basis+&#x27; readout / reset&#x27;;readouts.push({t:clock,end:clock+resetUs,basis,round,label});marks.push({t:clock,label});
+      if(resetUs&gt;0)stages.push({start:clock,end:clock+resetUs,label,kind:&#x27;readout&#x27;});clock+=resetUs;
+      if(round&lt;rounds){
+        for(const ids of fibreIds.values())if(full.atoms[ids[0]][2]===(basis===&#x27;X&#x27;?1:2)){
+          const slots=new Map(ids.map(i=&gt;[positions[i].map(x=&gt;Math.round(x/eps)).join(&#x27;,&#x27;),i]));
+          for(const logical of ids){const physical=slots.get(full.atoms[logical].slice(0,2).map(x=&gt;Math.round(x/eps)).join(&#x27;,&#x27;));
+            if(physical===undefined)throw Error(&#x27;Readout did not leave a permutation of fibre slots&#x27;);assignment[logical]=physical;}
+        }
+        recordAssignments(basis,round+1);
+      }
+    }
+    stage([[&#x27;X&#x27;,&#x27;H&#x27;,1]],&#x27;Startup · R1 X horizontal&#x27;);
+    for(let r=1;r&lt;=rounds;r++){
+      stage([[&#x27;X&#x27;,&#x27;I&#x27;,r],[&#x27;Z&#x27;,&#x27;I&#x27;,r]],&#x27;R&#x27;+r+&#x27; · f₀ ∥ f₁†&#x27;);
+      stage([[&#x27;X&#x27;,&#x27;V&#x27;,r],[&#x27;Z&#x27;,&#x27;V&#x27;,r]],&#x27;R&#x27;+r+&#x27; · X vertical ∥ Z vertical&#x27;);
+      readout(&#x27;X&#x27;,r);
+      stage([[&#x27;Z&#x27;,&#x27;H&#x27;,r],...(r&lt;rounds?[[&#x27;X&#x27;,&#x27;H&#x27;,r+1]]:[])],r&lt;rounds?&#x27;R&#x27;+r+&#x27; Z horizontal ∥ R&#x27;+(r+1)+&#x27; X horizontal&#x27;:&#x27;Drain · R&#x27;+r+&#x27; Z horizontal&#x27;);
+      readout(&#x27;Z&#x27;,r);
+    }
+    const finalRestoreStart=clock;
+    for(const bank of banks){const s=[...groups.values()].find(s=&gt;bankFor(s).id===bank.id);if(s)clock=Math.max(clock,align(s,null,finalRestoreStart,rounds));}
+    const finalRestoreUs=clock-finalRestoreStart;
+    if(finalRestoreUs&gt;eps){stages.push({start:finalRestoreStart,end:clock,label:&#x27;Final restoration · labelled fibre positions&#x27;,kind:&#x27;restoration&#x27;});marks.push({t:finalRestoreStart,label:&#x27;Final restoration&#x27;});}
+    moves.sort((a,b)=&gt;a[0]-b[0]);gates.sort((a,b)=&gt;a.t-b.t);
+    const cycleStarts=stages.filter(s=&gt;s.label.includes(&#x27;X vertical&#x27;)).map(s=&gt;s.start);
+    const period=cycleStarts.length&gt;1?cycleStarts[1]-cycleStarts[0]:null;
+    let parallelWitness=null;
+    for(const stage of stages){
+      const candidate=moves.filter(m=&gt;m[0]&gt;=stage.start-eps&amp;&amp;m[0]&lt;stage.end&amp;&amp;m[1]&gt;eps);
+      for(const a of candidate){const b=candidate.find(b=&gt;tasks[a[6]].basis!==tasks[b[6]].basis&amp;&amp;Math.min(a[0]+a[1],b[0]+b[1])-Math.max(a[0],b[0])&gt;1);if(b){parallelWitness={t:(Math.max(a[0],b[0])+Math.min(a[0]+a[1],b[0]+b[1]))/2,atoms:[a[5][0],b[5][0]]};break;}}
+      if(parallelWitness)break;
+    }
+    const bounds=full.layout.bounds.slice();
+    // Include restoration overshoots in fit-to-view bounds.
+    for(const p of sourcePositions){bounds[0]=Math.min(bounds[0],p[0]-12);bounds[1]=Math.max(bounds[1],p[0]+12);bounds[2]=Math.min(bounds[2],p[1]-12);bounds[3]=Math.max(bounds[3],p[1]+12);}
+    for(const m of moves)for(const i of m[5]){sourcePositions[i][0]+=m[2];sourcePositions[i][1]+=m[3];const p=sourcePositions[i];bounds[0]=Math.min(bounds[0],p[0]-12);bounds[1]=Math.max(bounds[1],p[0]+12);bounds[2]=Math.min(bounds[2],p[1]-12);bounds[3]=Math.max(bounds[3],p[1]+12);}
+    const compiled={...full,moves,tasks,gates,banks,capacity:full.capacity*2,total:clock,marks,parallelWitness,blockPassWitnesses:[],pathAudit:{witnesses:[]},
+      layout:{...full.layout,bounds},measurement:&#x27;all&#x27;,measurementOffsetUs:0,schedule:&#x27;parallel&#x27;,rounds,resetUs,stages,readouts,roundAssignments,
+      pipeline:{dataParkingBases:[...new Set([...groups.values()].filter(s=&gt;s.continuousSweep).map(s=&gt;s.basis))],sparseSweepSavingsUs:[...groups.values()].reduce((v,s)=&gt;v+(s.routeSavings||0),0)*rounds,period,connectorUs,finalRestoreStart,finalRestoreUs,firstX:readouts[0].end,firstZ:readouts[1].end,total:clock},
+      sectorTimesUs:{...full.sectorTimesUs,all:clock},audit:{...full.audit,scheduling:&#x27;Staggered X/Z rounds; retained fibre permutations and readout-boundary check reassignment; final-only labelled restoration&#x27;,collisionAvoidance:false}};
+    return resourceSchedule?compact(compiled):compiled;
+  }
+  // ASAP scheduling with each existing transport task kept rigid. Keep the order on each
+  // physical atom and AOD pair; remove only waits between unrelated resources.
+  // No spatial route, gate, pickup subset or per-round check assignment changes.
+  function compact(input){
+    const nodes=[], tasks=input.tasks.map(t=&gt;({...t})),gates=input.gates.map(g=&gt;({...g})),readouts=input.readouts.map(r=&gt;({...r}));
+    const reservations=new Map();
+    const add=(kind,index,start,end)=&gt;{const n={id:nodes.length,kind,index,start,end,duration:end-start,t:0,out:[]};nodes.push(n);return n;};
+    const reserve=(n,resource,start,end)=&gt;{if(!reservations.has(resource))reservations.set(resource,[]);reservations.get(resource).push({n,start,end,lo:start-n.start,hi:end-n.start});};
+    const taskNodes=tasks.map((t,i)=&gt;add(&#x27;task&#x27;,i,t.start,t.end));
+    const gateNodes=gates.map((g,i)=&gt;add(&#x27;gate&#x27;,i,g.t,g.end));
+    const readNodes=readouts.map((r,i)=&gt;add(&#x27;readout&#x27;,i,r.t,r.end));
+    for(const m of input.moves){const n=taskNodes[m[6]];for(const id of m[5])reserve(n,&#x27;atom:&#x27;+id,m[0],m[0]+m[1]);reserve(n,&#x27;pair:&#x27;+m[4],m[0],m[0]+m[1]);}
+    gates.forEach((g,i)=&gt;{for(const id of new Set(g.edges.flat()))reserve(gateNodes[i],&#x27;atom:&#x27;+id,g.t,g.end);});
+    readouts.forEach((r,i)=&gt;{input.atoms.forEach((a,id)=&gt;{if(a[2]===(r.basis===&#x27;X&#x27;?1:2))reserve(readNodes[i],&#x27;atom:&#x27;+id,r.t,r.end);});});
+    const constraints=new Map();
+    function precede(a,b,lag){if(a===b)return;const key=a.id+&#x27;:&#x27;+b.id,old=constraints.get(key);if(!old||lag&gt;old.lag)constraints.set(key,{a,b,lag});}
+    for(const [resource,rs] of reservations){
+      rs.sort((a,b)=&gt;Math.abs(a.start-b.start)&gt;eps?a.start-b.start:a.end-b.end);
+      for(let i=1;i&lt;rs.length;i++){const a=rs[i-1],b=rs[i];if(a.end&gt;b.start+eps)throw Error(&#x27;Overlapping source resource &#x27;+resource);precede(a.n,b.n,a.hi-b.lo);}
+    }
+    // Reserve a whole data quadrant from approach through departure. Atom/AOD
+    // dependencies alone allow a later check bank to dock early and wait in a
+    // region still used by another extraction phase (notably f1-dagger and ZV).
+    // Preserve the source phase order only for phases sharing a data quadrant.
+    const dataRegions=new Map(),phaseGroups=new Map();
+    for(const g of input.gates){if(g.pipelinePhase===&#x27;I&#x27;)continue;
+      const side=(g.basis===&#x27;X&#x27;)===(g.pipelinePhase===&#x27;H&#x27;)?&#x27;data1&#x27;:&#x27;data2&#x27;;
+      for(const [,id] of g.edges){const key=input.atoms[id][3]+&#x27;:&#x27;+side;if(dataRegions.has(id)&amp;&amp;dataRegions.get(id)!==key)throw Error(&#x27;Inconsistent data-quadrant assignment&#x27;);dataRegions.set(id,key);}
+    }
+    for(const n of [...taskNodes,...gateNodes]){
+      const item=n.kind===&#x27;task&#x27;?tasks[n.index]:gates[n.index];if(item.finalRestoration)continue;
+      const key=[item.block,item.round,item.pipelinePhase].join(&#x27;:&#x27;);
+      if(!phaseGroups.has(key))phaseGroups.set(key,{nodes:[],regions:new Set()});const group=phaseGroups.get(key);group.nodes.push(n);
+      if(n.kind===&#x27;gate&#x27;)for(const [,id] of item.edges){const region=dataRegions.get(id);if(!region)throw Error(&#x27;Unknown gate data quadrant&#x27;);group.regions.add(region);}
+    }
+    const regionUsers=new Map();
+    for(const group of phaseGroups.values()){
+      group.start=Math.min(...group.nodes.map(n=&gt;n.start));group.end=Math.max(...group.nodes.map(n=&gt;n.end));
+      for(const region of group.regions){if(!regionUsers.has(region))regionUsers.set(region,[]);regionUsers.get(region).push(group);}
+    }
+    for(const users of regionUsers.values()){
+      users.sort((a,b)=&gt;a.start-b.start);
+      // Some adapter interfaces already share a source phase on distinct
+      // target fibres. Retain that intentional concurrency as one cohort.
+      const cohorts=[];
+      for(const group of users){const last=cohorts.at(-1);
+        if(last&amp;&amp;group.start&lt;last.end-eps){last.nodes.push(...group.nodes);last.end=Math.max(last.end,group.end);}
+        else cohorts.push({nodes:group.nodes.slice(),end:group.end});
+      }
+      for(let i=1;i&lt;cohorts.length;i++){
+        const prev=cohorts[i-1],next=cohorts[i];
+        const release=add(&#x27;region-release&#x27;,-1,prev.end,prev.end);
+        for(const n of prev.nodes)precede(n,release,n.duration);
+        for(const n of next.nodes)precede(release,n,0);
+      }
+    }
+    // A reset also fences each basis&#x27;s entire next round, including idle fibres.
+    for(const r of readNodes)for(const n of taskNodes){const t=tasks[n.index],read=readouts[r.index];if(t.basis===read.basis&amp;&amp;t.round===read.round+1)precede(r,n,r.duration);}
+    // Preserve the clearance order within the new data-parking sweep. Its
+    // start may move, but its geometry-dependent relative timing stays fixed.
+    const sweeps=new Map();
+    for(const n of [...taskNodes,...gateNodes]){const item=n.kind===&#x27;task&#x27;?tasks[n.index]:gates[n.index];if(!item.continuousSweep)continue;const k=item.block+&#x27;:&#x27;+item.round;if(!sweeps.has(k))sweeps.set(k,[]);sweeps.get(k).push(n);}
+    for(const ns of sweeps.values()){
+      const a=ns.reduce((a,b)=&gt;a.start&lt;b.start?a:b),end=ns.reduce((a,b)=&gt;a.end&gt;b.end?a:b),members=new Set(ns);
+      for(const b of ns){precede(a,b,b.start-a.start);precede(b,a,a.start-b.start);}
+      // A parked data atom is unavailable to the other basis even while it
+      // stands still. Reserve its full excursion, not just its moving parts.
+      const held=new Set(ns.flatMap(n=&gt;n.kind===&#x27;task&#x27;?(tasks[n.index].dataHoldIds||[]):[]));
+      for(const id of held)for(const r of reservations.get(&#x27;atom:&#x27;+id)||[]){if(members.has(r.n))continue;
+        if(r.end&lt;=a.start+eps)precede(r.n,a,r.hi);
+        else if(r.start&gt;=end.end-eps)precede(end,r.n,end.duration-r.lo);
+        else throw Error(&#x27;External operation inside parked-data excursion&#x27;);
+      }
+    }
+    // Position restoration is deliberately deferred until ALL final readouts.
+    const finalReads=readNodes.filter(n=&gt;readouts[n.index].round===input.rounds);
+    for(const n of taskNodes)if(tasks[n.index].finalRestoration)for(const r of finalReads)precede(r,n,r.duration);
+    for(const c of constraints.values())c.a.out.push(c);
+    // Rigid tasks may interleave; offset constraints preserve each original
+    // reservation while allowing those interleavings. The source is feasible.
+    let changed=true;
+    for(let pass=0;changed;pass++){
+      if(pass&gt;=nodes.length)throw Error(&#x27;Inconsistent transport precedence&#x27;);changed=false;
+      for(const a of nodes)for(const {b,lag} of a.out)if(a.t+lag&gt;b.t+eps){b.t=a.t+lag;changed=true;}
+    }
+    for(const n of nodes)n.finish=n.t+n.duration;
+    for(let i=0;i&lt;tasks.length;i++){
+      const n=taskNodes[i],delta=n.t-n.start,t=tasks[i];t.start=n.t;t.end=n.finish;
+      if(t.localPhases)t.localPhases=t.localPhases.map(p=&gt;({...p,start:p.start+delta,end:p.end+delta}));
+    }
+    for(let i=0;i&lt;gates.length;i++){
+      const n=gateNodes[i],g=gates[i],old=input.gates[i];g.t=n.t;g.end=n.finish;
+      const related=taskNodes.filter(n=&gt;{const t=input.tasks[n.index];return t.block===g.block&amp;&amp;t.basis===g.basis&amp;&amp;t.round===g.round&amp;&amp;t.start&gt;=old.prepStart-eps&amp;&amp;t.end&lt;=old.returnEnd+eps;});
+      g.prepStart=Math.min(g.t,...related.map(n=&gt;n.t));g.returnEnd=Math.max(g.end,...related.map(n=&gt;n.finish));
+    }
+    for(let i=0;i&lt;readouts.length;i++){readouts[i].t=readNodes[i].t;readouts[i].end=readNodes[i].finish;}
+    const moves=input.moves.map(m=&gt;[m[0]+taskNodes[m[6]].t-taskNodes[m[6]].start,...m.slice(1)]).sort((a,b)=&gt;a[0]-b[0]);
+    gates.sort((a,b)=&gt;a.t-b.t);
+    const total=Math.max(...nodes.map(n=&gt;n.finish)),finalRestoreStart=Math.max(...readouts.map(r=&gt;r.end)),finalRestoreUs=total-finalRestoreStart;
+    const z=readouts.filter(r=&gt;r.basis===&#x27;Z&#x27;).sort((a,b)=&gt;a.round-b.round),intervals=z.slice(1).map((r,i)=&gt;r.end-z[i].end);
+    const period=intervals.length&amp;&amp;intervals.every(t=&gt;Math.abs(t-intervals[0])&lt;eps)?intervals[0]:null;
+    const phases=new Map();
+    function phase(bank,basis,round,letter,start,end){const k=[bank,basis,round,letter].join(&#x27;:&#x27;);if(!phases.has(k))phases.set(k,{bank,basis,round,phase:letter,start,end});const p=phases.get(k);p.start=Math.min(p.start,start);p.end=Math.max(p.end,end);}
+    tasks.forEach((t,i)=&gt;{if(t.finalRestoration)return;const original=input.tasks[i],s=input.stages.find(s=&gt;s.kind===&#x27;motion&#x27;&amp;&amp;original.start&gt;=s.start-eps&amp;&amp;original.end&lt;=s.end+eps);if(!s)throw Error(&#x27;Missing source phase&#x27;);const letter=s.label.includes(&#x27;horizontal&#x27;)?&#x27;H&#x27;:s.label.includes(&#x27;vertical&#x27;)?&#x27;V&#x27;:&#x27;I&#x27;;phase(t.block,t.basis,t.round,letter,t.start,t.end);});
+    for(const g of gates)phase(g.block,g.basis,g.round,g.pipelinePhase,g.t,g.end);
+    const stages=[...phases.values()].map(p=&gt;({...p,kind:&#x27;motion&#x27;,label:&#x27;R&#x27;+p.round+&#x27; &#x27;+input.banks.find(b=&gt;b.block===p.bank).name+&#x27; &#x27;+({H:&#x27;horizontal&#x27;,V:&#x27;vertical&#x27;,I:&#x27;interface&#x27;}[p.phase])}));
+    for(const r of readouts)if(r.end&gt;r.t)stages.push({start:r.t,end:r.end,label:r.label,kind:&#x27;readout&#x27;});
+    if(finalRestoreUs&gt;eps)stages.push({start:finalRestoreStart,end:total,label:&#x27;Final restoration · labelled fibre positions&#x27;,kind:&#x27;restoration&#x27;});
+    stages.sort((a,b)=&gt;a.start-b.start);
+    let parallelWitness=null;
+    for(const a of moves){const b=moves.find(b=&gt;tasks[a[6]].basis!==tasks[b[6]].basis&amp;&amp;Math.min(a[0]+a[1],b[0]+b[1])-Math.max(a[0],b[0])&gt;1);if(b){parallelWitness={t:(Math.max(a[0],b[0])+Math.min(a[0]+a[1],b[0]+b[1]))/2,atoms:[a[5][0],b[5][0]]};break;}}
+    const sparseBlock=gates.find(g=&gt;g.continuousSweep)?.block;
+    const sparseSweepTimesUs=sparseBlock?Object.fromEntries([&#x27;X&#x27;,&#x27;Z&#x27;].map(b=&gt;{const p=stages.find(s=&gt;s.bank===sparseBlock.replace(/-[XZ]$/,&#x27;-&#x27;+b)&amp;&amp;s.round===Math.min(2,input.rounds)&amp;&amp;s.phase===&#x27;H&#x27;);return [b,p.end-p.start];})):null;
+    return {...input,tasks,gates,moves,readouts,stages,total,parallelWitness,marks:readouts.map(r=&gt;({t:r.t,label:r.label})),
+      sectorTimesUs:{...input.sectorTimesUs,all:total},
+      pipeline:{...input.pipeline,regionOrderPreserved:true,sparseSweepTimesUs,period,intervals,finalRestoreStart,finalRestoreUs,firstX:readouts.find(r=&gt;r.basis===&#x27;X&#x27;).end,firstZ:z[0].end,total,barrierTotal:input.total,barrierPeriod:input.pipeline.period,resourceScheduled:true},
+      audit:{...input.audit,scheduling:input.audit.scheduling+&#x27;; per-atom/per-pair precedence, shared-data-region phase order and reserved data-parking excursions&#x27;}};
+  }
+
+  // Carry all check columns through the cyclic sweep. Park inactive auxiliary
+  // data 6 um off the gate line; restore each column before its nonzero entry.
+  // Gates and local shifts are unchanged; all data excursions are timed.
+  function continuousSparseSweep(s,full){
+    if(full.mode!==&#x27;fibre&#x27;||s.phase!==&#x27;H&#x27;||!s.gates.every(g=&gt;g.algebra.length===1&amp;&amp;g.algebra[0].factor===(s.basis===&#x27;X&#x27;?&#x27;C&#x27;:&#x27;C_dagger&#x27;)))return false;
+    const originalBank=full.banks.find(b=&gt;b.id===s.bank),pairs=originalBank.pairs,[w,h]=full.layout.fibre_shape,pitch=full.layout.tile_pitch_um[1];
+    const gs=[...s.gates].sort((a,b)=&gt;a.t-b.t),matrix=gs[0].algebra[0].matrix,N=Math.max(matrix.length,matrix[0].length),rows=new Map();
+    for(const g of gs)for(const cell of g.algebra[0].active)for(const e of cell.edgeIndices){const id=g.edges[e][0],f=full.atoms[id][4];if(rows.has(f)&amp;&amp;rows.get(f)!==cell.row)throw Error(&#x27;Inconsistent sweep row&#x27;);rows.set(f,cell.row);}
+    if(s.ids.some(i=&gt;!rows.has(full.atoms[i][4])))throw Error(&#x27;Incomplete sparse sweep rows&#x27;);
+    const row=i=&gt;rows.get(full.atoms[i][4]);
+    const starts=new Map(s.ids.map(i=&gt;[i,[full.atoms[i][0]+s.before.get(i)[0],full.atoms[i][1]+s.before.get(i)[1]]]));
+    const dataColumns=new Map();
+    for(const g of gs)for(const cell of g.algebra[0].active)for(const e of cell.edgeIndices){const id=g.edges[e][1];if(!dataColumns.has(cell.col))dataColumns.set(cell.col,new Set());dataColumns.get(cell.col).add(id);}
+    for(const ids of dataColumns.values())for(const id of ids)starts.set(id,full.atoms[id].slice(0,2));
+    const p=new Map([...starts].map(([i,v])=&gt;[i,v.slice()]));
+    let base=null;
+    for(const g of gs)for(const cell of g.algebra[0].active)for(const e of cell.edgeIndices){
+      const [a,b]=g.edges[e],ca=full.atoms[a],da=full.atoms[b];
+      const cy=ca[1]-12*(full.layout.placement===&#x27;integer-CRT&#x27;?ca[5]%h:Math.floor(ca[5]/w));
+      const dy=da[1]-12*(full.layout.placement===&#x27;integer-CRT&#x27;?da[5]%h:Math.floor(da[5]/w));
+      const v=dy-cy-(cell.col-cell.row)*pitch;if(base===null)base=v;else if(Math.abs(base-v)&gt;eps)throw Error(&#x27;Nonuniform sparse sweep geometry&#x27;);
+    }
+    let t=s.start;const tasks=[],moves=[],gates=[],offsets=new Map([...starts.keys()].map(i=&gt;[i,[0,0]]));
+    const emitBatch=(requests,label)=&gt;{
+      const work=requests.filter(r=&gt;r.ids.length&amp;&amp;Math.hypot(r.dx,r.dy)&gt;eps);
+      for(let first=0;first&lt;work.length;first+=pairs.length){
+        const batch=work.slice(first,first+pairs.length),start=t;let end=t;
+        batch.forEach((r,j)=&gt;{const duration=travel(Math.hypot(r.dx,r.dy)),id=tasks.length;
+          const task={start,end:start+duration,label,pairs:[pairs[j]],kind:&#x27;translation&#x27;,basis:s.basis,block:originalBank.block,continuousSweep:true};
+          tasks.push([id,task]);moves.push([start,duration,r.dx,r.dy,pairs[j],r.ids.slice(),id]);end=Math.max(end,start+duration);
+          for(const i of r.ids){p.get(i)[0]+=r.dx;p.get(i)[1]+=r.dy;offsets.get(i)[0]+=r.dx;offsets.get(i)[1]+=r.dy;}
+        });t=end;
+      }
+    };
+    const permTasks=s.tasks.filter(([,t])=&gt;t.kind===&#x27;permutation&#x27;).sort((a,b)=&gt;a[1].start-b[1].start),used=new Set();
+    function localBefore(g){
+      for(const [old,task] of permTasks)if(!used.has(old)&amp;&amp;task.end&lt;=g.t+eps){
+        const delta=t-task.start,id=tasks.length;tasks.push([id,{...task,start:t,end:task.end+delta,localPhases:task.localPhases?.map(p=&gt;({...p,start:p.start+delta,end:p.end+delta})),continuousSweep:true}]);
+        for(const m of s.moves.filter(m=&gt;m[6]===old)){moves.push([m[0]+delta,...m.slice(1,6),id]);for(const i of m[5]){p.get(i)[0]+=m[2];p.get(i)[1]+=m[3];}}
+        t=task.end+delta;used.add(old);
+      }
+    }
+    const dataOffsets=new Map([...dataColumns.keys()].map(c=&gt;[c,0])),heldData=new Set();
+    function maskData(g){
+      const active=new Set(g.algebra[0].active.map(c=&gt;c.col)),requests=new Map();
+      for(const [col,ids] of dataColumns){const target=active.has(col)?0:-6,dx=target-dataOffsets.get(col);if(Math.abs(dx)&gt;eps){if(!requests.has(dx))requests.set(dx,[]);requests.get(dx).push(...ids);for(const id of ids)heldData.add(id);}dataOffsets.set(col,target);}
+      emitBatch([...requests].map(([dx,ids])=&gt;({ids,dx,dy:0})),&#x27;Sparse &#x27;+s.basis+&#x27; sweep · park inactive data / restore active data&#x27;);
+    }
+    let previousSlot=new Map(s.ids.map(i=&gt;[i,row(i)])),previousShift=0;
+    for(let gi=0;gi&lt;gs.length;gi++){
+      const g=gs[gi],prepStart=t;if(gi&gt;0)maskData(g);localBefore(g);
+      const shifts=[...new Set(g.algebra[0].active.map(c=&gt;((c.col-c.row)%N+N)%N))];if(shifts.length!==1)throw Error(&#x27;Noncyclic sparse matching&#x27;);const shift=shifts[0];
+      const slot=i=&gt;(row(i)+shift)%N;
+      if(gi===0){
+        if(shift!==0)throw Error(&#x27;Sweep must begin with diagonal matching&#x27;);
+        emitBatch([{ids:s.ids,dx:s.basis===&#x27;X&#x27;?2:6,dy:0}],&#x27;Sparse &#x27;+s.basis+&#x27; sweep · enter clearance lane&#x27;);
+        emitBatch([{ids:s.ids,dx:0,dy:base}],&#x27;Sparse &#x27;+s.basis+&#x27; sweep · carry all columns to auxiliary data&#x27;);
+        emitBatch([{ids:s.ids,dx:s.basis===&#x27;X&#x27;?0:-4,dy:0}],&#x27;Sparse &#x27;+s.basis+&#x27; sweep · dock at auxiliary data&#x27;);
+      }else{
+        const groups=new Map();for(const i of s.ids){const dy=(slot(i)-previousSlot.get(i))*pitch;if(!groups.has(dy))groups.set(dy,[]);groups.get(dy).push(i);}
+        // The cyclic overflow is the group travelling in the opposite direction.
+        const step=((shift-previousShift+N+N/2)%N)-N/2;
+        const wrapping=[...groups].filter(([dy])=&gt;Math.abs(dy-step*pitch)&gt;eps).flatMap(([,ids])=&gt;ids);
+        emitBatch([{ids:wrapping,dx:s.basis===&#x27;X&#x27;?2:6,dy:0}],&#x27;Sparse &#x27;+s.basis+&#x27; sweep · wrap clearance&#x27;);
+        emitBatch([...groups].map(([dy,ids])=&gt;({ids,dx:0,dy})),&#x27;Sparse &#x27;+s.basis+&#x27; sweep · continuous cyclic step&#x27;);
+        emitBatch([{ids:wrapping,dx:s.basis===&#x27;X&#x27;?-2:-6,dy:0}],&#x27;Sparse &#x27;+s.basis+&#x27; sweep · dock wrapped columns&#x27;);
+      }
+      if(gi===0)maskData(g);
+      previousSlot=new Map(s.ids.map(i=&gt;[i,slot(i)]));previousShift=shift;
+      const end=t+(g.end-g.t);
+      gates.push({...g,prepStart,t,end,returnEnd:end,continuousSweep:true,algebra:g.algebra.map(a=&gt;({...a,skipped:a.skipped.map(c=&gt;({...c,parkedHome:false,carriedIdle:true}))}))});t=end;
+    }
+    localBefore({t:Infinity});
+    if(used.size!==permTasks.length)throw Error(&#x27;Unassigned local shift in sparse sweep&#x27;);
+    if(s.basis===&#x27;X&#x27;){
+      const ids=[...dataColumns].filter(([col])=&gt;dataOffsets.get(col)!==0).flatMap(([,ids])=&gt;[...ids]);
+      emitBatch([{ids,dx:6,dy:0}],&#x27;Sparse X sweep · restore data before homeward lanes&#x27;);
+      for(const col of dataOffsets.keys())dataOffsets.set(col,0);
+    }
+    // Bring two row groups home through different clearance lanes; do not park
+    // one group on another&#x27;s path. Both groups finish before docking at home.
+    const homeGroups=new Map();for(const i of s.ids){const dy=-offsets.get(i)[1];if(!homeGroups.has(dy))homeGroups.set(dy,[]);homeGroups.get(dy).push(i);}
+    const returning=[...homeGroups].map(([dy,ids],j)=&gt;({ids,dy,lane:s.basis===&#x27;X&#x27;?2+2*j:4+4*j}));if(returning.length&gt;2)throw Error(&#x27;Unexpected cyclic return groups&#x27;);
+    emitBatch(returning.map(r=&gt;({ids:r.ids,dx:r.lane-2,dy:0})),&#x27;Sparse &#x27;+s.basis+&#x27; sweep · separate return lanes&#x27;);
+    emitBatch(returning.map(r=&gt;({ids:r.ids,dx:0,dy:r.dy})),&#x27;Sparse &#x27;+s.basis+&#x27; sweep · grouped homeward shuttle&#x27;);
+    emitBatch(returning.map(r=&gt;({ids:r.ids,dx:-r.lane,dy:0})),&#x27;Sparse &#x27;+s.basis+&#x27; sweep · dock all columns at home&#x27;);
+    const restoreData=[...dataColumns].filter(([col])=&gt;dataOffsets.get(col)!==0).flatMap(([,ids])=&gt;[...ids]);
+    emitBatch([{ids:restoreData,dx:6,dy:0}],&#x27;Sparse &#x27;+s.basis+&#x27; sweep · restore data home&#x27;);
+    tasks[0][1].dataHoldIds=[...heldData];
+    gates.at(-1).returnEnd=t;
+    for(const i of starts.keys()){const old=starts.get(i).slice();for(const m of s.moves)if(m[5].includes(i)){old[0]+=m[2];old[1]+=m[3];}if(Math.hypot(p.get(i)[0]-old[0],p.get(i)[1]-old[1])&gt;eps)throw Error(&#x27;Sparse sweep endpoint changed&#x27;);}
+    if(t&gt;=s.end-eps)return false;
+    s.routeSavings=s.end-t;s.end=t;s.tasks=tasks;s.moves=moves;s.gates=gates;s.continuousSweep=true;return true;
+  }
+
+    function sliceSerial(full,scope){
+      const metadata={measurement:scope,measurementOffsetUs:0,sectorTimesUs:full.sectorTimesUs};
+      if(scope===&#x27;all&#x27;)return {...full,...metadata};
+      const timing=full.sectorSchedules[scope],taskIds=new Map(),deltas=new Map(),tasks=[];
+      full.tasks.forEach((task,id)=&gt;{
+        if(task.basis!==scope)return;
+        const delta=timing.taskStarts[id]-task.start;
+        taskIds.set(id,tasks.length);deltas.set(id,delta);
+        tasks.push({...task,start:task.start+delta,end:task.end+delta,
+          localPhases:task.localPhases?.map(p=&gt;({...p,start:p.start+delta,end:p.end+delta}))});
+      });
+      const moves=full.moves.filter(m=&gt;taskIds.has(m[6])).map(m=&gt;[m[0]+deltas.get(m[6]),...m.slice(1,6),taskIds.get(m[6])]);
+      const gates=full.gates.flatMap((g,i)=&gt;{
+        const t=timing.gateTimes[i];return t?[{...g,t:t[0],end:t[1],prepStart:t[2],returnEnd:t[3]}]:[];
+      }).sort((a,b)=&gt;a.t-b.t);
+      let parallelWitness=null;
+      for(const a of moves){
+        if(a[4]&gt;=full.pairsPerCode)continue;
+        for(const b of moves){
+          if(b[4]&lt;full.pairsPerCode||b[4]&gt;=2*full.pairsPerCode)continue;
+          const lo=Math.max(a[0],b[0]),hi=Math.min(a[0]+a[1],b[0]+b[1]);
+          if(hi-lo&gt;1){parallelWitness={t:(lo+hi)/2,atoms:[a[5][0],b[5][0]],movingCodes:[&#x27;data&#x27;,&#x27;ancilla&#x27;]};break;}
+        }
+        if(parallelWitness)break;
+      }
+      function shiftWitness(w){
+        const move=full.moves.find(m=&gt;taskIds.has(m[6])&amp;&amp;m[5].includes(w.atoms[0])&amp;&amp;m[0]&lt;=w.t&amp;&amp;w.t&lt;m[0]+m[1]);
+        return move?{...w,t:w.t+deltas.get(move[6])}:null;
+      }
+      return {...full,...metadata,total:timing.total,moves,tasks,gates,
+        marks:[{t:0,label:scope+&#x27; sector&#x27;}],parallelWitness,
+        blockPassWitnesses:(full.blockPassWitnesses||[]).filter(w=&gt;w.basis===scope).map(shiftWitness).filter(Boolean),
+        pathAudit:{...full.pathAudit,witnesses:(full.pathAudit?.witnesses||[]).map(shiftWitness).filter(Boolean)}};
+    }
+  const serialCache=new WeakMap();
+  // Route selection is shared by full X-then-Z and standalone basis views.
+  // The original shared X/Z pair budget and all unaffected bank timings stay
+  // unchanged. No parallel-round construction is used for the serial views.
+  function serial(full,scope=&#x27;all&#x27;,routeSchedule=true){
+    if(![&#x27;all&#x27;,&#x27;X&#x27;,&#x27;Z&#x27;].includes(scope))throw Error(&#x27;Invalid measurement scope&#x27;);
+    if(!routeSchedule)return sliceSerial(full,scope);
+    if(!serialCache.has(full)){
+      const variants=Object.fromEntries([&#x27;all&#x27;,&#x27;X&#x27;,&#x27;Z&#x27;].map(b=&gt;[b,routeSerial(sliceSerial(full,b))]));
+      const times=Object.fromEntries(Object.entries(variants).map(([b,m])=&gt;[b,m.total]));
+      for(const m of Object.values(variants))m.sectorTimesUs=times;
+      serialCache.set(full,variants);
+    }
+    return serialCache.get(full)[scope];
+  }
+  function routeSerial(input){
+    for(const basis of [&#x27;X&#x27;,&#x27;Z&#x27;])input=routeSerialBasis(input,basis);
+    return input;
+  }
+  function routeSerialBasis(input,basis){
+    if(input.mode!==&#x27;fibre&#x27;||(input.measurement!==&#x27;all&#x27;&amp;&amp;input.measurement!==basis))return input;
+    const gs=input.gates.filter(g=&gt;g.basis===basis&amp;&amp;g.algebra.length===1&amp;&amp;g.algebra[0].factor===(basis===&#x27;X&#x27;?&#x27;C&#x27;:&#x27;C_dagger&#x27;));
+    if(!gs.length)return input;
+    const bank=gs[0].bank;if(gs.some(g=&gt;g.bank!==bank))throw Error(&#x27;Multiple sparse serial banks&#x27;);
+    const s={bank,basis,phase:&#x27;H&#x27;,gates:gs,start:Math.min(...gs.map(g=&gt;g.prepStart)),end:Math.max(...gs.map(g=&gt;g.returnEnd))};
+    const block=input.banks.find(b=&gt;b.id===bank);
+    s.ids=input.atoms.flatMap((a,i)=&gt;a[2]===(basis===&#x27;X&#x27;?1:2)&amp;&amp;block.modules.includes(a[3])?[i]:[]);
+    s.before=new Map(s.ids.map(i=&gt;[i,[0,0]]));
+    for(const m of input.moves)if(m[0]+m[1]&lt;=s.start+eps)for(const i of m[5])if(s.before.has(i)){s.before.get(i)[0]+=m[2];s.before.get(i)[1]+=m[3];}
+    s.tasks=input.tasks.flatMap((t,i)=&gt;t.block===block.block&amp;&amp;t.basis===basis&amp;&amp;t.start&gt;=s.start-eps&amp;&amp;t.end&lt;=s.end+eps?[[i,t]]:[]);
+    const replacedTasks=new Set(s.tasks.map(([i])=&gt;i));s.moves=input.moves.filter(m=&gt;replacedTasks.has(m[6]));
+    s.originalEnd=s.end;
+    if(!continuousSparseSweep(s,input))return {...input,dataParkingFallbackBases:[...(input.dataParkingFallbackBases||[]),basis]};
+    // Advance this bank&#x27;s remaining operations only as far as the original
+    // cross-bank atom order permits. The pair budget is unchanged.
+    const tailTasks=new Set(input.tasks.flatMap((task,i)=&gt;task.block===block.block&amp;&amp;task.start&gt;=s.originalEnd-eps?[i]:[]));
+    const tailGates=new Set(input.gates.filter(g=&gt;g.bank===bank&amp;&amp;g.prepStart&gt;=s.originalEnd-eps));
+    const ops=[...input.tasks.map((task,i)=&gt;({start:task.start,end:task.end,tail:tailTasks.has(i),skip:replacedTasks.has(i),ids:new Set(input.moves.filter(m=&gt;m[6]===i).flatMap(m=&gt;m[5]))})),...input.gates.map(g=&gt;({start:g.t,end:g.end,tail:tailGates.has(g),skip:gs.includes(g),ids:new Set(g.edges.flat())}))];
+    let advance=s.routeSavings;
+    const previousEnd=new Map();
+    for(const op of ops.filter(o=&gt;!o.tail&amp;&amp;!o.skip))for(const id of op.ids){if(!previousEnd.has(id))previousEnd.set(id,[]);previousEnd.get(id).push(op);}
+    for(const op of ops.filter(o=&gt;o.tail))for(const id of op.ids)for(const prev of previousEnd.get(id)||[])if(prev.end&lt;=op.start+eps)advance=Math.min(advance,Math.max(0,op.start-prev.end));
+    const shiftTask=t=&gt;({...t,start:t.start-advance,end:t.end-advance,localPhases:t.localPhases?.map(p=&gt;({...p,start:p.start-advance,end:p.end-advance}))});
+
+    const tasks=[],map=new Map(),fresh=new Map();
+    input.tasks.forEach((t,i)=&gt;{if(!replacedTasks.has(i)){map.set(i,tasks.length);tasks.push(tailTasks.has(i)?shiftTask(t):t);}});
+    for(const [i,t] of s.tasks){fresh.set(i,tasks.length);tasks.push(t);}
+    const moves=[...input.moves.filter(m=&gt;!replacedTasks.has(m[6])).map(m=&gt;[m[0]-(tailTasks.has(m[6])?advance:0),...m.slice(1,6),map.get(m[6])]),...s.moves.map(m=&gt;[...m.slice(0,6),fresh.get(m[6])])].sort((a,b)=&gt;a[0]-b[0]);
+    const replacedGates=new Set(gs),gates=[...input.gates.filter(g=&gt;!replacedGates.has(g)).map(g=&gt;tailGates.has(g)?{...g,t:g.t-advance,end:g.end-advance,prepStart:g.prepStart-advance,returnEnd:g.returnEnd-advance}:g),...s.gates].sort((a,b)=&gt;a.t-b.t);
+    const total=Math.max(...tasks.map(t=&gt;t.end),...gates.map(g=&gt;g.end));
+    let parallelWitness=null;
+    for(const a of moves){const b=moves.find(b=&gt;tasks[a[6]].block!==tasks[b[6]].block&amp;&amp;Math.min(a[0]+a[1],b[0]+b[1])-Math.max(a[0],b[0])&gt;1);if(b){parallelWitness={t:(Math.max(a[0],b[0])+Math.min(a[0]+a[1],b[0]+b[1]))/2,atoms:[a[5][0],b[5][0]]};break;}}
+    return {...input,tasks,moves,gates,total,dataParking:true,sparseSweepTimesUs:{...input.sparseSweepTimesUs,[basis]:s.end-s.start},
+      serialRouteSavingsUs:(input.serialRouteSavingsUs||0)+input.total-total,parallelWitness,blockPassWitnesses:[],pathAudit:{witnesses:[]},
+      audit:{...input.audit,scheduling:&#x27;Per-bank X then Z; inactive auxiliary data parking in sparse X/Z sweeps&#x27;,collisionAvoidance:false}};
+  }
+
+  return Object.freeze({compile,serial});
+})();
+
+&lt;/script&gt;
 &lt;script id=&quot;aod-view-projection&quot;&gt;
 // Quarter turns apply to the canvas only; physical model coordinates never change.
 var AodView=Object.freeze({
@@ -1568,6 +2039,15 @@ var AodView=Object.freeze({
     &lt;label class=&quot;form-label&quot;&gt;Check measurement
       &lt;select class=&quot;form-select&quot; id=&quot;aod-measurement&quot;&gt;&lt;option value=&quot;all&quot;&gt;Full cycle · X + Z&lt;/option&gt;&lt;option value=&quot;X&quot;&gt;Merged X checks only&lt;/option&gt;&lt;option value=&quot;Z&quot;&gt;Merged Z checks only&lt;/option&gt;&lt;/select&gt;
     &lt;/label&gt;
+    &lt;label class=&quot;form-label&quot;&gt;X/Z schedule
+      &lt;select class=&quot;form-select&quot; id=&quot;aod-schedule&quot;&gt;&lt;option value=&quot;serial&quot;&gt;X then Z&lt;/option&gt;&lt;option value=&quot;parallel&quot;&gt;X/Z parallel · left–right&lt;/option&gt;&lt;/select&gt;
+    &lt;/label&gt;
+    &lt;label class=&quot;form-label&quot; id=&quot;aod-rounds-control&quot; hidden&gt;Rounds
+      &lt;select class=&quot;form-select&quot; id=&quot;aod-rounds&quot;&gt;&lt;option value=&quot;1&quot;&gt;1&lt;/option&gt;&lt;option value=&quot;3&quot; selected&gt;3&lt;/option&gt;&lt;option value=&quot;5&quot;&gt;5&lt;/option&gt;&lt;/select&gt;
+    &lt;/label&gt;
+    &lt;label class=&quot;form-label&quot; id=&quot;aod-reset-control&quot; hidden&gt;Readout + reset (μs)
+      &lt;input class=&quot;form-control&quot; id=&quot;aod-reset&quot; type=&quot;number&quot; min=&quot;0&quot; max=&quot;1000000&quot; step=&quot;1&quot; value=&quot;0&quot;&gt;
+    &lt;/label&gt;
     &lt;label class=&quot;form-label&quot;&gt;Lift and initial layout
       &lt;select class=&quot;form-select&quot; id=&quot;aod-lift&quot;&gt;&lt;option value=&quot;9&quot;&gt;ℓ = 9 · 3 × 3 row-major&lt;/option&gt;&lt;option value=&quot;15&quot;&gt;ℓ = 15 · 3 × 5 CRT&lt;/option&gt;&lt;option value=&quot;33&quot;&gt;ℓ = 33 · 3 × 11 CRT&lt;/option&gt;&lt;/select&gt;
     &lt;/label&gt;
@@ -1589,7 +2069,7 @@ var AodView=Object.freeze({
     &lt;span&gt;&lt;i class=&quot;aod-swatch aod-anc-bank&quot;&gt;&lt;/i&gt;Ancillary bank trajectories&lt;/span&gt;
   &lt;/div&gt;
   &lt;div class=&quot;aod-legend text-small&quot;&gt;
-    &lt;span&gt;&lt;i class=&quot;aod-swatch aod-fixed&quot;&gt;&lt;/i&gt;Fixed data · q labels&lt;/span&gt;
+    &lt;span&gt;&lt;i class=&quot;aod-swatch aod-fixed&quot;&gt;&lt;/i&gt;Data qubits · q labels&lt;/span&gt;
     &lt;span&gt;&lt;i class=&quot;aod-swatch aod-x&quot;&gt;&lt;/i&gt;X check △ · X labels&lt;/span&gt;
     &lt;span&gt;&lt;i class=&quot;aod-swatch aod-z&quot;&gt;&lt;/i&gt;Z check □ · Z labels&lt;/span&gt;
     &lt;span&gt;&lt;i class=&quot;aod-swatch aod-danger&quot;&gt;&lt;/i&gt;Separation &amp;lt; 0.4 μm&lt;/span&gt;
@@ -1601,6 +2081,9 @@ var AodView=Object.freeze({
 &lt;div class=&quot;text-small&quot;&gt;1 pair = x AOD + y AOD = one 2D trap grid; 2 pairs = two independent grids. Within-block collision avoidance is excluded.&lt;/div&gt;
 &lt;div class=&quot;text-small&quot; id=&quot;aod-local-status&quot; aria-live=&quot;polite&quot;&gt;&lt;/div&gt;
 &lt;div class=&quot;text-small&quot; data-surgery-only&gt;Independent addressed bank pulses: no data/ancilla round barrier. Shared AOD routes and opposite-basis gates on the same atoms retain their order. X/Z-only views have independent clocks.&lt;/div&gt;
+  &lt;div class=&quot;text-small&quot; id=&quot;aod-schedule-note&quot; aria-live=&quot;polite&quot;&gt;&lt;/div&gt;
+  &lt;div class=&quot;text-small&quot; id=&quot;aod-data-parking-assumptions&quot; hidden&gt;Sparse X/Z sweeps move inactive auxiliary data 6 μm off the gate line and restore them before their next interaction. Data travel and AOD-pair occupancy are included in this X-then-Z or Z-only schedule; no additional AOD pairs are allocated. X uses narrow wrap and return lanes to clear the neighbouring Z data parking area. Data return home at the end of the sweep. Trap-transfer time is excluded. Whole-fibre transports are checked against data and same-bank same-basis checks; full cross-bank collision avoidance and local reshuffles are not certified.&lt;/div&gt;
+  &lt;div class=&quot;text-small&quot; id=&quot;aod-pipeline-assumptions&quot; hidden&gt;Parallel scheduling uses independent X/Z AOD banks. Within-fibre permutations are retained across sweeps and rounds. After each basis readout/reset, the next round assigns its checks to the atoms currently occupying their starting slots; that assignment is fixed throughout the round. Original physical atom labels are restored only after the final round. In fibre mode, faster data-parking routes are selected separately for X and Z. These sparse A′ sweeps keep the check columns together and move inactive auxiliary data columns 6 μm off the gate line, restoring each before its next gate. Data parking and return travel use the existing Z-bank AOD pairs and are counted. A data column remains reserved for the whole excursion. Independent banks start when atom, AOD-pair and shared-data-region dependencies allow. An interface approach waits for the preceding sweep to leave its target data quadrant; the following sweep waits for the interface to depart. Intentional simultaneous interfaces in the original adapter phase remain together; the clearance order inside each data-parking sweep stays fixed. Readout/reset is synchronized across all banks of the same basis; the other basis may continue. Final restoration travel is counted. This schedule is not a global timing optimum. New whole-fibre transports are checked against data and same-bank same-basis checks, including the absence of unintended docking at sparse gates. Local reshuffles and full simultaneous-route collision avoidance across banks are not certified. Dashed X/Z-coloured timeline marks indicate readout/reset boundaries; a 0 μs setting excludes their durations.&lt;/div&gt;
   &lt;div class=&quot;text-small&quot; id=&quot;aod-mode-description&quot;&gt;&lt;/div&gt;
   &lt;div class=&quot;text-small&quot; id=&quot;aod-readout&quot;&gt;&lt;/div&gt;
   &lt;div class=&quot;viz-row text-small tabular-nums&quot; id=&quot;aod-sector-times&quot; aria-label=&quot;Separate merged-check measurement times&quot;&gt;
@@ -1610,7 +2093,7 @@ var AodView=Object.freeze({
   &lt;div class=&quot;aod-linked-view&quot;&gt;
   &lt;div class=&quot;aod-motion-panel&quot; id=&quot;aod-motion-panel&quot;&gt;
   &lt;div class=&quot;aod-space-viewport&quot; role=&quot;region&quot; aria-label=&quot;LP layout; scroll horizontally in narrow windows to read every block label&quot;&gt;
-  &lt;canvas class=&quot;aod-space&quot; id=&quot;aod-space&quot; role=&quot;img&quot; aria-label=&quot;Rotate the AOD display in 90 degree steps; axis labels show physical x and y. The physical LP module has data and Z checks above X checks and data. Every visible fibre is labeled: q for fixed data, X and Z for checks. Highlighted polynomial entries are linked to their exact check-data interactions. Atoms have equal 12 micrometre spacing in both axes.&quot;&gt;&lt;/canvas&gt;
+  &lt;canvas class=&quot;aod-space&quot; id=&quot;aod-space&quot; role=&quot;img&quot; aria-label=&quot;Rotate the AOD display in 90 degree steps; axis labels show physical x and y. The physical LP module has data and Z checks above X checks and data. Every visible fibre is labeled: q for data, X and Z for checks. Highlighted polynomial entries are linked to their exact check-data interactions. Atoms have equal 12 micrometre spacing in both axes.&quot;&gt;&lt;/canvas&gt;
   &lt;/div&gt;
   &lt;div class=&quot;aod-status tabular-nums&quot;&gt;
     &lt;span id=&quot;aod-clock&quot;&gt;&lt;/span&gt;&lt;span id=&quot;aod-gate-status&quot;&gt;&lt;/span&gt;
@@ -1754,6 +2237,7 @@ const source=unpackModels(JSON.parse(unpacked));
     const canvas=$(&#x27;aod-space&#x27;), lane=$(&#x27;aod-lanes&#x27;);
     const ctx=canvas.getContext(&#x27;2d&#x27;), lc=lane.getContext(&#x27;2d&#x27;);
     let lastSurgeryMode=&#x27;fibre&#x27;;
+    const pipelineCache=new Map();
     let model,tracks,mode=&#x27;fibre&#x27;,measurement=&#x27;all&#x27;,laneLeft=90,time=0,playing=false,lastFrame=0,holdUntil=0,selected=[],focus=[0,0],view=&#x27;full&#x27;,conflictIndex=0;
     let width=736,height=390,plot={},currentPositions=[],currentPairs=[],hoverText=&#x27;&#x27;,lastDescription=&#x27;&#x27;;
     let level=&#x27;blocks&#x27;,fibres=[],fibreKey=&#x27;2:1:15&#x27;,fibreHit=[],labelFit=null;
@@ -1779,40 +2263,7 @@ const source=unpackModels(JSON.parse(unpacked));
     const moduleColor=id=&gt;bankColor(Math.max(0,model.banks.findIndex(b=&gt;b.modules.includes(id))));
     const moduleCategory=id=&gt;moduleById(id)?.kind===&#x27;data&#x27;?&#x27;data&#x27;:&#x27;ancilla&#x27;;
     const escapeHTML=value=&gt;String(value).replace(/[&amp;&lt;&gt;&quot;&#x27;]/g,c=&gt;({&#x27;&amp;&#x27;:&#x27;&amp;amp;&#x27;,&#x27;&lt;&#x27;:&#x27;&amp;lt;&#x27;,&#x27;&gt;&#x27;:&#x27;&amp;gt;&#x27;,&#x27;&quot;&#x27;:&#x27;&amp;quot;&#x27;,&quot;&#x27;&quot;:&#x27;&amp;#39;&#x27;}[c]));
-    function measurementModel(full,scope){
-      const metadata={measurement:scope,measurementOffsetUs:0,sectorTimesUs:full.sectorTimesUs};
-      if(scope===&#x27;all&#x27;)return {...full,...metadata};
-      const timing=full.sectorSchedules[scope],taskIds=new Map(),deltas=new Map(),tasks=[];
-      full.tasks.forEach((task,id)=&gt;{
-        if(task.basis!==scope)return;
-        const delta=timing.taskStarts[id]-task.start;
-        taskIds.set(id,tasks.length);deltas.set(id,delta);
-        tasks.push({...task,start:task.start+delta,end:task.end+delta,
-          localPhases:task.localPhases?.map(p=&gt;({...p,start:p.start+delta,end:p.end+delta}))});
-      });
-      const moves=full.moves.filter(m=&gt;taskIds.has(m[6])).map(m=&gt;[m[0]+deltas.get(m[6]),...m.slice(1,6),taskIds.get(m[6])]);
-      const gates=full.gates.flatMap((g,i)=&gt;{
-        const t=timing.gateTimes[i];return t?[{...g,t:t[0],end:t[1],prepStart:t[2],returnEnd:t[3]}]:[];
-      }).sort((a,b)=&gt;a.t-b.t);
-      let parallelWitness=null;
-      for(const a of moves){
-        if(a[4]&gt;=full.pairsPerCode)continue;
-        for(const b of moves){
-          if(b[4]&lt;full.pairsPerCode||b[4]&gt;=2*full.pairsPerCode)continue;
-          const lo=Math.max(a[0],b[0]),hi=Math.min(a[0]+a[1],b[0]+b[1]);
-          if(hi-lo&gt;1){parallelWitness={t:(lo+hi)/2,atoms:[a[5][0],b[5][0]],movingCodes:[&#x27;data&#x27;,&#x27;ancilla&#x27;]};break;}
-        }
-        if(parallelWitness)break;
-      }
-      function shiftWitness(w){
-        const move=full.moves.find(m=&gt;taskIds.has(m[6])&amp;&amp;m[5].includes(w.atoms[0])&amp;&amp;m[0]&lt;=w.t&amp;&amp;w.t&lt;m[0]+m[1]);
-        return move?{...w,t:w.t+deltas.get(move[6])}:null;
-      }
-      return {...full,...metadata,total:timing.total,moves,tasks,gates,
-        marks:[{t:0,label:scope+&#x27; sector&#x27;}],parallelWitness,
-        blockPassWitnesses:(full.blockPassWitnesses||[]).filter(w=&gt;w.basis===scope).map(shiftWitness).filter(Boolean),
-        pathAudit:{...full.pathAudit,witnesses:(full.pathAudit?.witnesses||[]).map(shiftWitness).filter(Boolean)}};
-    }
+    function measurementModel(full,scope){return AodParallel.serial(full,scope);}
     // End measurement slicing
     function makeTracks(){
       tracks=model.atoms.map(()=&gt;[]);
@@ -1839,7 +2290,7 @@ const source=unpackModels(JSON.parse(unpacked));
         const gx=Math.floor(p[0]/.4),gy=Math.floor(p[1]/.4);
         for(let dx=-1;dx&lt;=1;dx++)for(let dy=-1;dy&lt;=1;dy++){
           const list=grid.get((gx+dx)+&#x27;,&#x27;+(gy+dy))||[];
-          list.forEach(j=&gt;{if(i&lt;model.fixed&amp;&amp;j&lt;model.fixed)return;
+          list.forEach(j=&gt;{if(i&lt;model.fixed&amp;&amp;j&lt;model.fixed&amp;&amp;!model.pipeline?.sparseSweepSavingsUs&amp;&amp;!model.dataParking)return;
             const d=Math.hypot(p[0]-xy[j][0],p[1]-xy[j][1]);if(d&lt;.4)pairs.push([i,j,d]);});
         }
         const key=gx+&#x27;,&#x27;+gy;if(!grid.has(key))grid.set(key,[]);grid.get(key).push(i);
@@ -1882,6 +2333,7 @@ const source=unpackModels(JSON.parse(unpacked));
     }
     function mono(s){return s===0?&#x27;1&#x27;:&#x27;x^&#x27;+s;}
     function gateName(g){
+      if(g.round)return &#x27;R&#x27;+g.round+&#x27; &#x27;+g.basis+&#x27; · &#x27;+g.label.replace(/^R\d+ [XZ] · /,&#x27;&#x27;);
       if(!g.details.length)return (g.basis===&#x27;X&#x27;?&#x27;X extension&#x27;:&#x27;Z merge&#x27;)+&#x27; · &#x27;+g.label;
       return g.details.map(d=&gt;d.name.replace(&#x27;ancilla&#x27;,&#x27;Anc&#x27;).replace(&#x27;data&#x27;,&#x27;Data&#x27;).replace(&#x27;_prime&#x27;,&#x27;′&#x27;).replace(&#x27;_dagger&#x27;,&#x27;†&#x27;)+&#x27; r&#x27;+d.round+&#x27; → &#x27;+d.region).join(&#x27; / &#x27;);
     }
@@ -1897,7 +2349,8 @@ const source=unpackModels(JSON.parse(unpacked));
     }
     function selectCoefficient(cell,shown){
       if(cell.exponent===null){
-        const atom=cell.checkFibres.find(i=&gt;keyOf(i)===fibreKey)??cell.checkFibres[0];
+        const candidates=cell.carriedIdle?cell.dataFibres:cell.checkFibres;
+        const atom=candidates.find(i=&gt;keyOf(i)===fibreKey)??candidates[0];
         if(atom!==undefined){chooseFibre(keyOf(atom));selected=[atom];}
       }else{
         const edge=shown.edges[cell.edgeIndices.find(i=&gt;shown.edges[i].some(a=&gt;keyOf(a)===fibreKey))??cell.edgeIndices[0]];
@@ -1920,7 +2373,7 @@ const source=unpackModels(JSON.parse(unpacked));
         selectCoefficient(selectedChoice.cell,shown);
       }
       if(view!==&#x27;detail&#x27;&amp;&amp;selectedChoice){
-        if(selectedChoice.cell.exponent===null)selected=[selectedChoice.cell.checkFibres.find(i=&gt;keyOf(i)===fibreKey)??selectedChoice.cell.checkFibres[0]];
+        if(selectedChoice.cell.exponent===null){const candidates=selectedChoice.cell.carriedIdle?selectedChoice.cell.dataFibres:selectedChoice.cell.checkFibres;selected=[candidates.find(i=&gt;keyOf(i)===fibreKey)??candidates[0]];}
         else{
           const edgeIndex=selectedChoice.cell.edgeIndices.find(i=&gt;shown.edges[i].some(a=&gt;keyOf(a)===fibreKey));
           selected=(shown.edges[edgeIndex===undefined?selectedChoice.cell.edgeIndices[0]:edgeIndex]||[]).slice();
@@ -1928,15 +2381,15 @@ const source=unpackModels(JSON.parse(unpacked));
       }
       polynomialEdges=new Set(selectedChoice?selectedChoice.cell.edgeIndices:[]);
       // Every participating coefficient keeps its bank fill, independently of
-      // the inspected coefficient. Zero entries identify parked checks only.
+      // the inspected coefficient. Zero entries identify the parked data or checks.
       activePolynomialFibres=new Map(routing?shown.algebra.flatMap(group=&gt;group.active.flatMap(cell=&gt;
         cell.edgeIndices.flatMap(i=&gt;shown.edges[i].map(a=&gt;[keyOf(a),group.code])))):[]);
-      skippedPolynomialFibres=new Set(routing?shown.algebra.flatMap(group=&gt;group.skipped.flatMap(cell=&gt;cell.checkFibres.map(keyOf))):[]);
+      skippedPolynomialFibres=new Set(routing?shown.algebra.flatMap(group=&gt;group.skipped.flatMap(cell=&gt;(cell.carriedIdle?cell.dataFibres:cell.checkFibres).map(keyOf))):[]);
       polynomialFibres=new Set(selectedChoice&amp;&amp;selectedChoice.cell.exponent!==null?coefficientAtoms(selectedChoice.cell,shown).map(keyOf):[]);
       root.dataset.activeFibreHighlights=&#x27;[]&#x27;;
       root.dataset.polynomialPhase=phase;
       root.dataset.polynomialFocus=JSON.stringify(selectedChoice?{factor:selectedChoice.group.factor,code:selectedChoice.group.code,
-        row:selectedChoice.cell.row,col:selectedChoice.cell.col,exponent:selectedChoice.cell.exponent,polynomial:selectedChoice.cell.polynomial,parkedHome:selectedChoice.cell.parkedHome||false,
+        row:selectedChoice.cell.row,col:selectedChoice.cell.col,exponent:selectedChoice.cell.exponent,polynomial:selectedChoice.cell.polynomial,parkedHome:selectedChoice.cell.parkedHome||false,dataParking:!!selectedChoice.cell.carriedIdle,
         phase,skipped:selectedChoice.cell.exponent===null,edges:selectedChoice.cell.edgeIndices.map(i=&gt;shown.edges[i]),
         checkFibres:selectedChoice.cell.checkFibres||[],dataFibres:selectedChoice.cell.dataFibres||[]}:null);
       const signature=[mode,model.lift,model.capacity,index,phase,selectedChoice?.key||&#x27;&#x27;,fibreKey].join(&#x27;|&#x27;);
@@ -1981,7 +2434,7 @@ const source=unpackModels(JSON.parse(unpacked));
               const chosen=selectedChoice&amp;&amp;selectedChoice.key===polynomialKey(group,current);td.dataset.selected=String(!!chosen);
               const button=document.createElement(&#x27;button&#x27;);button.type=&#x27;button&#x27;;button.className=&#x27;btn&#x27;;button.innerHTML=&#x27;&lt;span class=&quot;aod-math&quot;&gt;&#x27;+polynomialHTML(coefficient,current.exponent)+&#x27;&lt;/span&gt;&#x27;;
               button.setAttribute(&#x27;aria-pressed&#x27;,String(!!chosen));
-              button.setAttribute(&#x27;aria-label&#x27;,group.factor+&#x27; row &#x27;+(r+1)+&#x27;, column &#x27;+(c+1)+&#x27;: &#x27;+(skipped?&#x27;0. &#x27;+skipped.checkFibres.length+&#x27; check fibres stay at home; no gate.&#x27;:polynomialText(coefficient)+&#x27;. Selected monomial &#x27;+mono(current.exponent)+&#x27;. Inspect &#x27;+active.edgeIndices.length/model.lift+&#x27; parallel fibre interactions.&#x27;));
+              button.setAttribute(&#x27;aria-label&#x27;,group.factor+&#x27; row &#x27;+(r+1)+&#x27;, column &#x27;+(c+1)+&#x27;: &#x27;+(skipped?&#x27;0. &#x27;+(skipped.carriedIdle?skipped.dataFibres.length+&#x27; data fibres use the parking lane; no gate.&#x27;:skipped.checkFibres.length+&#x27; check fibres stay at home; no gate.&#x27;):polynomialText(coefficient)+&#x27;. Selected monomial &#x27;+mono(current.exponent)+&#x27;. Inspect &#x27;+active.edgeIndices.length/model.lift+&#x27; parallel fibre interactions.&#x27;));
               button.addEventListener(&#x27;click&#x27;,()=&gt;{
                 selectCoefficient(current,shown);polynomialChoice=polynomialKey(group,current);draw();save();
               });td.append(button);
@@ -1991,9 +2444,9 @@ const source=unpackModels(JSON.parse(unpacked));
         });table.append(body);const scroll=document.createElement(&#x27;div&#x27;);scroll.className=&#x27;aod-polynomial-scroll&#x27;;scroll.append(table);section.append(scroll);return section;
       }));
       const skippedChoices=choices.filter(c=&gt;c.cell.exponent===null);
-      $(&#x27;aod-poly-skips&#x27;).textContent=skippedChoices.map(({group,cell})=&gt;
-        &#x27;0 → &#x27;+cell.checkFibres.map(i=&gt;(group.basis||shown.basis)+model.atoms[i][4]).join(&#x27;, &#x27;)
-        +&#x27; stay at home · no gate&#x27;).join(&#x27; · &#x27;);
+      $(&#x27;aod-poly-skips&#x27;).textContent=skippedChoices.map(({group,cell})=&gt;cell.carriedIdle?
+        &#x27;0 → park data &#x27;+cell.dataFibres.map(i=&gt;&#x27;q&#x27;+model.atoms[i][4]).join(&#x27;, &#x27;)+&#x27; · checks continue sweeping · no gate&#x27;:
+        &#x27;0 → &#x27;+cell.checkFibres.map(i=&gt;(group.basis||shown.basis)+model.atoms[i][4]).join(&#x27;, &#x27;)+&#x27; stay at home · no gate&#x27;).join(&#x27; · &#x27;);
       if(selectedChoice){
         const {group,cell}=selectedChoice;
         if(cell.exponent===null){
@@ -2047,17 +2500,33 @@ const source=unpackModels(JSON.parse(unpacked));
       mode=nextMode;if(mode!==&#x27;memory&#x27;)lastSurgeryMode=mode;measurement=nextMeasurement;$(&#x27;aod-budget&#x27;).value=cap;
       const full=source.models.find(m=&gt;(m.mode||&#x27;fibre&#x27;)===mode&amp;&amp;m.lift===lift&amp;&amp;m.pairsPerCode===Number(cap));
       if(!full)throw Error(&#x27;Missing AOD model: &#x27;+mode+&#x27; / &#x27;+lift+&#x27; / &#x27;+cap);
-      model=measurementModel(full,measurement);
+      const parallel=$(&#x27;aod-schedule&#x27;).value===&#x27;parallel&#x27;&amp;&amp;measurement===&#x27;all&#x27;;
+      $(&#x27;aod-schedule&#x27;).disabled=measurement!==&#x27;all&#x27;;
+      $(&#x27;aod-rounds-control&#x27;).hidden=!parallel;$(&#x27;aod-reset-control&#x27;).hidden=!parallel;
+      const rounds=Number($(&#x27;aod-rounds&#x27;).value),resetUs=Math.max(0,Math.min(1000000,Number($(&#x27;aod-reset&#x27;).value)||0));$(&#x27;aod-reset&#x27;).value=resetUs;
+      const cacheKey=[mode,lift,cap,rounds,resetUs].join(&#x27;:&#x27;);
+      if(parallel&amp;&amp;!pipelineCache.has(cacheKey))pipelineCache.set(cacheKey,AodParallel.compile(full,rounds,resetUs));
+      model=parallel?pipelineCache.get(cacheKey):measurementModel(full,measurement);
+      $(&#x27;aod-pipeline-assumptions&#x27;).hidden=!parallel;
+      $(&#x27;aod-data-parking-assumptions&#x27;).hidden=!model.dataParking;
+      $(&#x27;aod-schedule-note&#x27;).textContent=parallel?rounds+&#x27; rounds · Region-aware scheduling · &#x27;+(model.pipeline.period!==null?&#x27;Steady period &#x27;+(model.pipeline.period/1000).toFixed(3)+&#x27; ms · &#x27;:&#x27;&#x27;)+(model.pipeline.sparseSweepTimesUs?&#x27;Sparse A′ sweep: data parking (&#x27;+model.pipeline.dataParkingBases.join(&#x27;/&#x27;)+&#x27;) · X &#x27;+(model.pipeline.sparseSweepTimesUs.X/1000).toFixed(3)+&#x27; ms / Z &#x27;+(model.pipeline.sparseSweepTimesUs.Z/1000).toFixed(3)+&#x27; ms · &#x27;:&#x27;&#x27;)+&#x27;Stage-wait savings &#x27;+((model.pipeline.barrierTotal-model.total)/1000).toFixed(3)+&#x27; ms · Independent X/Z banks: &#x27;+model.capacity+&#x27; AOD pairs (2× original) · Final-only position restoration &#x27;+(model.pipeline.finalRestoreUs/1000).toFixed(3)+&#x27; ms · &#x27;+(resetUs?&#x27;Readout + reset &#x27;+resetUs+&#x27; μs / boundary&#x27;:&#x27;Readout/reset excluded (0 μs)&#x27;):(measurement===&#x27;all&#x27;?&#x27;Per-bank X then Z schedule.&#x27;:measurement+&#x27; checks.&#x27;)+(model.dataParking?&#x27; Sparse A′ sweep: data parking · &#x27;+Object.entries(model.sparseSweepTimesUs).map(([b,t])=&gt;b+&#x27; &#x27;+(t/1000).toFixed(3)+&#x27; ms&#x27;).join(&#x27; / &#x27;)+&#x27; · Original shared AOD-pair budget.&#x27;:&#x27;&#x27;);
+      if(model.dataParkingFallbackBases?.length)$(&#x27;aod-schedule-note&#x27;).textContent+=&#x27; &#x27;+model.dataParkingFallbackBases.join(&#x27;/&#x27;)+&#x27;: original route retained because data parking is slower at this pair budget.&#x27;;
       makeTracks();makeFibres();selected=selected.filter(i=&gt;i&lt;model.atoms.length);
       $(&#x27;aod-mode&#x27;).value=mode;$(&#x27;aod-lift&#x27;).value=lift;$(&#x27;aod-measurement&#x27;).value=measurement;
       $(&#x27;aod-title&#x27;).textContent=(model.modeLabel||{fibre:&#x27;Fibre logical&#x27;,packet:&#x27;Packet logical&#x27;,adapter:&#x27;Two-code adapter&#x27;}[mode])+&#x27; · ℓ = &#x27;+lift+&#x27; · &#x27;+model.layout.fibre_shape.join(&#x27; × &#x27;);
       $(&#x27;aod-ring&#x27;).innerHTML=&#x27;R&lt;sub&gt;&#x27;+lift+&#x27;&lt;/sub&gt; = F&lt;sub&gt;2&lt;/sub&gt;[x] / (x&lt;sup&gt;&#x27;+lift+&#x27;&lt;/sup&gt; + 1) · B = A&lt;sup&gt;†&lt;/sup&gt;&#x27;;
       $(&#x27;aod-lift-rule&#x27;).innerHTML=&#x27;x&lt;sup&gt;s&lt;/sup&gt;: t → t + s mod &#x27;+lift+&#x27; · (x&lt;sup&gt;s&lt;/sup&gt;)&lt;sup&gt;†&lt;/sup&gt; = x&lt;sup&gt;−s mod &#x27;+lift+&#x27;&lt;/sup&gt;&#x27;;
       $(&#x27;aod-placement&#x27;).textContent=lift===9?&#x27;Row-major loading: sheet t → (t mod 3, floor(t / 3))&#x27;:&#x27;Integer CRT loading: sheet t → (t mod 3, t mod &#x27;+(lift/3)+&#x27;) · independent x/y cyclic shifts&#x27;;
-      $(&#x27;aod-mode-description&#x27;).innerHTML=mode===&#x27;memory&#x27;?&#x27;One closed X + Z syndrome cycle of the original LP data code. Checks return to their exact labelled homes after each sector.&#x27;:mode===&#x27;packet&#x27;?&#x27;C = [A; e₄; g e₀; …; g e₃], g = 1 + x; g&lt;sup&gt;†&lt;/sup&gt; = 1 + x&lt;sup&gt;&#x27;+(lift-1)+&#x27;&lt;/sup&gt;. Each monomial receives a separate pulse.&#x27;:mode===&#x27;adapter&#x27;?&#x27;C = diag([A; e₄], [A; e₃]) with link row α₁ = [e₃, x e₄]. Four independent module banks; the linking strip shares Ancilla 1’s bank.&#x27;:&#x27;C = [A; e₄]. Zero coefficients keep their check fibres at home.&#x27;;
+      $(&#x27;aod-mode-description&#x27;).innerHTML=mode===&#x27;memory&#x27;?&#x27;One closed X + Z syndrome cycle of the original LP data code. Checks return to their exact labelled homes after each sector.&#x27;:mode===&#x27;packet&#x27;?&#x27;C = [A; e₄; g e₀; …; g e₃], g = 1 + x; g&lt;sup&gt;†&lt;/sup&gt; = 1 + x&lt;sup&gt;&#x27;+(lift-1)+&#x27;&lt;/sup&gt;. Each monomial receives a separate pulse.&#x27;:mode===&#x27;adapter&#x27;?&#x27;C = diag([A; e₄], [A; e₃]) with link row α₁ = [e₃, x e₄]. Four independent module banks; the linking strip shares Ancilla 1’s bank.&#x27;:&#x27;C = [A; e₄]. &#x27;+(model.dataParking||model.pipeline?.sparseSweepSavingsUs?&#x27;Sparse A′ sweeps park inactive auxiliary data and carry check columns together when this shortens the route.&#x27;:&#x27;Zero coefficients keep their check fibres at home.&#x27;);
       $(&#x27;aod-readout&#x27;).textContent=(mode===&#x27;memory&#x27;||measurement===&quot;all&quot;?&quot;&quot;:&quot;Full surgery: &quot;)+(model.readoutLabel||&#x27;&#x27;);
       root.querySelectorAll(&#x27;[data-measurement-time]&#x27;).forEach(el=&gt;{
-        const basis=el.dataset.measurementTime,duration=model.sectorTimesUs[basis];
+        const basis=el.dataset.measurementTime;
+        if(parallel){
+          const period=model.pipeline.period;
+          el.textContent=basis===&#x27;X&#x27;?&#x27;First X readout = &#x27;+(model.pipeline.firstX/1000).toFixed(3)+&#x27; ms&#x27;:basis===&#x27;Z&#x27;?&#x27;First Z readout = &#x27;+(model.pipeline.firstZ/1000).toFixed(3)+&#x27; ms&#x27;:rounds+&#x27; rounds = &#x27;+(model.total/1000).toFixed(3)+&#x27; ms&#x27;+(period!==null?&#x27; · steady period = &#x27;+(period/1000).toFixed(3)+&#x27; ms&#x27;:&#x27;&#x27;);
+          el.dataset.durationUs=basis===&#x27;X&#x27;?model.pipeline.firstX:basis===&#x27;Z&#x27;?model.pipeline.firstZ:model.total;return;
+        }
+        const duration=model.sectorTimesUs[basis];
         el.dataset.durationUs=duration;
         el.textContent=(basis===&#x27;all&#x27;?(mode===&#x27;memory&#x27;?&#x27;Memory cycle&#x27;:&#x27;X + Z&#x27;):(mode===&#x27;memory&#x27;?basis+&#x27; checks&#x27;:&#x27;Merged &#x27;+basis))+&#x27; = &#x27;+(duration/1000).toFixed(3)+&#x27; ms&#x27;;
       });
@@ -2076,7 +2545,11 @@ const source=unpackModels(JSON.parse(unpacked));
       polynomialSignature=&#x27;&#x27;;polynomialChoice=null;
       $(&#x27;aod-time&#x27;).max=model.total;conflictIndex=0;
       $(&#x27;aod-pulse&#x27;).replaceChildren(...model.gates.map((g,i)=&gt;{const o=document.createElement(&#x27;option&#x27;);o.value=i;o.textContent=gateName(g);return o;}));
-      memoryPresentation();time=initial?0:Math.min(time,model.total);draw();
+      memoryPresentation();
+      if(parallel){$(&#x27;aod-memory-benchmark&#x27;).hidden=true;$(&#x27;aod-parallel&#x27;).hidden=false;}
+      $(&#x27;aod-budget&#x27;).closest(&#x27;label&#x27;).firstChild.textContent=parallel?&#x27;AOD pairs per X/Z bank &#x27;:&#x27;AOD pairs per bank &#x27;;
+      $(&#x27;aod-parallel&#x27;).textContent=parallel?&#x27;Show X/Z overlap&#x27;:&#x27;Show parallel motion&#x27;;
+      time=initial?0:Math.min(time,model.total);draw();
     }
     function setupCanvas(c,context,h,w=width){
       const dpr=window.devicePixelRatio||1;
@@ -2152,6 +2625,9 @@ const source=unpackModels(JSON.parse(unpacked));
       lc.globalAlpha=1;lc.strokeStyle=palette.border;lc.lineWidth=1;
       model.banks.slice(1).forEach(bank=&gt;{const y=Math.min(...bank.pairs)*pitch+1;lc.beginPath();lc.moveTo(0,y);lc.lineTo(width-right,y);lc.stroke();});
       model.gates.forEach(g=&gt;{let x=left+g.t*scale;lc.beginPath();lc.moveTo(x,2);lc.lineTo(x,model.capacity*pitch);lc.stroke();});
+      for(const r of model.readouts||[]){
+        const x=left+r.t*scale;lc.strokeStyle=palette[&#x27;viz-series-&#x27;+(r.basis===&#x27;X&#x27;?1:2)];lc.setLineDash([3,2]);lc.beginPath();lc.moveTo(x,0);lc.lineTo(x,model.capacity*pitch);lc.stroke();lc.setLineDash([]);
+      }
       lc.strokeStyle=palette.foreground;let x=left+time*scale;lc.beginPath();lc.moveTo(x,0);lc.lineTo(x,model.capacity*pitch);lc.stroke();
       lc.textBaseline=&#x27;top&#x27;;lc.fillStyle=palette.foreground;
       [0,.5,1].forEach(f=&gt;{lc.textAlign=f===0?&#x27;left&#x27;:f===1?&#x27;right&#x27;:&#x27;center&#x27;;lc.fillText((model.total*f/1000).toFixed(2)+&#x27; ms&#x27;,left+f*(width-left-right),model.capacity*pitch+3);});
@@ -2270,7 +2746,7 @@ const source=unpackModels(JSON.parse(unpacked));
       });
       }
       ctx.restore();
-      $(&#x27;aod-clock&#x27;).textContent=(mode===&#x27;memory&#x27;?(measurement===&#x27;all&#x27;?&#x27;Memory cycle&#x27;:measurement+&#x27; checks&#x27;):(measurement===&#x27;all&#x27;?&#x27;Full cycle&#x27;:&#x27;Merged &#x27;+measurement))+&#x27; · &#x27;+(time/1000).toFixed(5)+&#x27; / &#x27;+(model.total/1000).toFixed(3)+&#x27; ms&#x27;;
+      $(&#x27;aod-clock&#x27;).textContent=model.schedule===&#x27;parallel&#x27;?&#x27;X/Z parallel · &#x27;+model.rounds+&#x27; rounds · &#x27;+(time/1000).toFixed(5)+&#x27; / &#x27;+(model.total/1000).toFixed(3)+&#x27; ms&#x27;:(mode===&#x27;memory&#x27;?(measurement===&#x27;all&#x27;?&#x27;Memory cycle&#x27;:measurement+&#x27; checks&#x27;):(measurement===&#x27;all&#x27;?&#x27;Full cycle&#x27;:&#x27;Merged &#x27;+measurement))+&#x27; · &#x27;+(time/1000).toFixed(5)+&#x27; / &#x27;+(model.total/1000).toFixed(3)+&#x27; ms&#x27;;
       $(&#x27;aod-time&#x27;).value=time;
       $(&#x27;aod-gate-status&#x27;).textContent=gate?&#x27;Gate ON · &#x27;+gate.edges.length+&#x27; pairs&#x27;:&#x27;Gate OFF&#x27;;
       const localTask=model.tasks.find(t=&gt;t.kind===&#x27;permutation&#x27;&amp;&amp;t.start&lt;=time&amp;&amp;time&lt;t.end);
@@ -2287,7 +2763,7 @@ const source=unpackModels(JSON.parse(unpacked));
         return d.name.replace(&#x27;_prime&#x27;,&#x27;′&#x27;).replace(&#x27;_dagger&#x27;,&#x27;†&#x27;)+&#x27; → &#x27;+d.region+&#x27; · round &#x27;+d.round+&#x27; · targets &#x27;+target;
       }).join(&#x27; | &#x27;):gateName(gate)+&#x27; · &#x27;+gate.edges.length+&#x27; gates&#x27;;
       else description=[...new Set(currentTasks.map(t=&gt;t.label))].join(&#x27; | &#x27;)||&#x27;Checks parked&#x27;;
-      if(localTask&amp;&amp;localPhase&gt;=0)description=$(&#x27;aod-local-status&#x27;).textContent;if(description!==lastDescription){$(&#x27;aod-detail&#x27;).textContent=description;lastDescription=description;}
+      if(localTask&amp;&amp;localPhase&gt;=0)description=$(&#x27;aod-local-status&#x27;).textContent;if(model.schedule===&#x27;parallel&#x27;){const activeStages=model.stages.filter(s=&gt;s.start&lt;=time&amp;&amp;time&lt;s.end);description=(activeStages.length?activeStages.map(s=&gt;s.label).join(&#x27; ∥ &#x27;):time&gt;=model.total?&#x27;Pipeline complete&#x27;:&#x27;Preparing&#x27;)+&#x27; · &#x27;+description;}if(description!==lastDescription){$(&#x27;aod-detail&#x27;).textContent=description;lastDescription=description;}
       if(currentPairs.length){
         const pair=currentPairs.reduce((a,b)=&gt;a[2]&lt;b[2]?a:b);
         $(&#x27;aod-selected&#x27;).textContent=currentPairs.length+&#x27; close pairs · minimum &#x27;+pair[2].toFixed(6)+&#x27; μm&#x27;+(selected.length?&#x27; · &#x27;+selected.map(atomName).join(&#x27; ↔ &#x27;):&#x27;&#x27;);
@@ -2305,10 +2781,11 @@ const source=unpackModels(JSON.parse(unpacked));
       root.dataset.movingCodes=JSON.stringify([...new Set(currentPositions.flatMap((p,i)=&gt;p[2]&gt;=0?[moduleCategory(model.atoms[i][3])]:[]))].sort());
       root.dataset.mode=mode;root.dataset.movingModules=JSON.stringify([...new Set(currentPositions.flatMap((p,i)=&gt;p[2]&gt;=0?[moduleName(model.atoms[i][3])]:[]))]);
       root.dataset.pairsPerCode=model.pairsPerCode;root.dataset.totalPairs=model.capacity;root.dataset.lift=model.lift;
+      root.dataset.schedule=model.schedule||&#x27;serial&#x27;;root.dataset.rounds=model.rounds||1;root.dataset.steadyPeriodUs=model.pipeline?.period??&#x27;&#x27;;root.dataset.pipelineReadouts=JSON.stringify(model.readouts||[]);root.dataset.finalRestoreUs=model.pipeline?.finalRestoreUs??&#x27;&#x27;;
       root.dataset.measurement=measurement;root.dataset.measurementOffsetUs=model.measurementOffsetUs;root.dataset.durationUs=model.total;
     }
     function save(){
-      if(window.openai&amp;&amp;window.openai.setWidgetState)window.openai.setWidgetState({modelContent:{mode,measurement,lift:model.lift,speed:Number($(&#x27;aod-speed&#x27;).value),logicalSector:&#x27;Z&#x27;,pairsPerCode:model.pairsPerCode,totalAodPairs:model.capacity,allocation:&#x27;dedicated-per-bank&#x27;,timeMs:time/1000,view,level,fibre:fibreKey,layout:&#x27;polynomial-linked-v4&#x27;,polynomial:polynomialChoice},privateContent:{selected,focus}}).catch(()=&gt;{});
+      if(window.openai&amp;&amp;window.openai.setWidgetState)window.openai.setWidgetState({modelContent:{mode,measurement,schedule:$(&#x27;aod-schedule&#x27;).value,rounds:Number($(&#x27;aod-rounds&#x27;).value),resetUs:Number($(&#x27;aod-reset&#x27;).value),lift:model.lift,speed:Number($(&#x27;aod-speed&#x27;).value),logicalSector:&#x27;Z&#x27;,pairsPerCode:model.pairsPerCode,totalAodPairs:model.capacity,allocation:&#x27;dedicated-per-bank&#x27;,timeMs:time/1000,view,level,fibre:fibreKey,layout:&#x27;polynomial-linked-v4&#x27;,polynomial:polynomialChoice},privateContent:{selected,focus}}).catch(()=&gt;{});
     }
     function stop(){playing=false;$(&#x27;aod-play&#x27;).textContent=&#x27;Play&#x27;;holdUntil=0;}
     window.addEventListener(&#x27;aod-family-change&#x27;,event=&gt;{
@@ -2323,6 +2800,7 @@ const source=unpackModels(JSON.parse(unpacked));
     $(&#x27;aod-budget&#x27;).addEventListener(&#x27;change&#x27;,()=&gt;{stop();load($(&#x27;aod-budget&#x27;).value,true);resize();save();});
     $(&#x27;aod-mode&#x27;).addEventListener(&#x27;change&#x27;,()=&gt;{stop();selected=[];fibreKey=&#x27;2:0:0&#x27;;view=&#x27;full&#x27;;time=0;load($(&#x27;aod-budget&#x27;).value,true);resize();save();});
     $(&#x27;aod-measurement&#x27;).addEventListener(&#x27;change&#x27;,()=&gt;{stop();selected=[];if(view===&#x27;detail&#x27;)view=&#x27;full&#x27;;load($(&#x27;aod-budget&#x27;).value,true);resize();save();});
+    for(const id of [&#x27;aod-schedule&#x27;,&#x27;aod-rounds&#x27;,&#x27;aod-reset&#x27;])$(id).addEventListener(&#x27;change&#x27;,()=&gt;{stop();time=0;load($(&#x27;aod-budget&#x27;).value,true);resize();save();});
     $(&#x27;aod-speed&#x27;).addEventListener(&#x27;change&#x27;,save);
     $(&#x27;aod-lift&#x27;).addEventListener(&#x27;change&#x27;,()=&gt;{stop();selected=[];fibreKey=&#x27;2:0:0&#x27;;view=&#x27;full&#x27;;$(&#x27;aod-view&#x27;).value=view;load($(&#x27;aod-budget&#x27;).value,false);time=0;resize();save();});
     $(&#x27;aod-view&#x27;).addEventListener(&#x27;change&#x27;,()=&gt;{
@@ -2374,8 +2852,11 @@ const source=unpackModels(JSON.parse(unpacked));
       if(!state||!state.modelContent)return;const s=state.modelContent;if(![9,15,33].includes(s.lift)||![&#x27;polynomial-linked-v1&#x27;,&#x27;polynomial-linked-v2&#x27;,&#x27;polynomial-linked-v3&#x27;,&#x27;polynomial-linked-v4&#x27;].includes(s.layout))return;
       const savedMode=[&#x27;polynomial-linked-v3&#x27;,&#x27;polynomial-linked-v4&#x27;].includes(s.layout)&amp;&amp;[&#x27;fibre&#x27;,&#x27;packet&#x27;,&#x27;adapter&#x27;,&#x27;memory&#x27;].includes(s.mode)?s.mode:&#x27;fibre&#x27;;
       const savedMeasurement=s.layout===&#x27;polynomial-linked-v4&#x27;&amp;&amp;[&#x27;all&#x27;,&#x27;X&#x27;,&#x27;Z&#x27;].includes(s.measurement)?s.measurement:&#x27;all&#x27;;
+      const schedule=s.schedule===&#x27;parallel&#x27;?&#x27;parallel&#x27;:&#x27;serial&#x27;,rounds=[1,3,5].includes(s.rounds)?s.rounds:3,resetUs=Number.isFinite(s.resetUs)?Math.max(0,Math.min(1000000,s.resetUs)):0;
+      const pipelineChanged=$(&#x27;aod-schedule&#x27;).value!==schedule||Number($(&#x27;aod-rounds&#x27;).value)!==rounds||Number($(&#x27;aod-reset&#x27;).value)!==resetUs;
+      $(&#x27;aod-schedule&#x27;).value=schedule;$(&#x27;aod-rounds&#x27;).value=rounds;$(&#x27;aod-reset&#x27;).value=resetUs;
       if([1,2].includes(s.pairsPerCode)){
-        if(model.pairsPerCode!==s.pairsPerCode||model.lift!==s.lift||mode!==savedMode||measurement!==savedMeasurement)load(s.pairsPerCode,false,s.lift,savedMode,savedMeasurement);
+        if(pipelineChanged||model.pairsPerCode!==s.pairsPerCode||model.lift!==s.lift||mode!==savedMode||measurement!==savedMeasurement)load(s.pairsPerCode,false,s.lift,savedMode,savedMeasurement);
         $(&#x27;aod-budget&#x27;).value=s.pairsPerCode;
       }
       if([...$(&#x27;aod-view&#x27;).options].some(o=&gt;o.value===s.view)){view=s.view;$(&#x27;aod-view&#x27;).value=view;}
@@ -3010,9 +3491,10 @@ const api={compile,select,positionsAt};if(typeof module!==&#x27;undefined&#x27;&
   if(graph){for(const label of [...motion.querySelector(&#x27;.viz-controls&#x27;).children])viewControls.append(label);motion.querySelector(&#x27;.viz-controls&#x27;).remove();}
   else for(const id of [&#x27;view&#x27;,&#x27;pulse&#x27;,&#x27;level&#x27;])viewControls.append(node(id).closest(&#x27;label&#x27;));
   config.append(...viewControls.children);
+  if(!graph){const note=node(&#x27;schedule-note&#x27;);config.after(note);}
   for(const [id,label] of Object.entries(graph?{&#x27;method&#x27;:&#x27;Construction&#x27;,&#x27;budget&#x27;:&#x27;Data-bank AOD pairs&#x27;,&#x27;surgery-budget&#x27;:&#x27;1D surgery AOD pairs&#x27;,&#x27;sector&#x27;:&#x27;Measurement&#x27;}:{&#x27;measurement&#x27;:&#x27;Measurement&#x27;,&#x27;lift&#x27;:&#x27;Lift and layout&#x27;,&#x27;budget&#x27;:&#x27;AOD pairs per bank&#x27;})){const control=node(id),parent=control.closest(&#x27;label&#x27;);parent.title=parent.textContent.trim();parent.firstChild.textContent=label+&#x27; &#x27;;}
   const paneHead=el(&#x27;div&#x27;,&#x27;viewer-pane-head&#x27;);
-  paneHead.append(el(&#x27;h3&#x27;,&#x27;&#x27;,&#x27;Spatial layout&#x27;),el(&#x27;span&#x27;,&#x27;text-small text-muted&#x27;,&#x27;Fixed data · movable checks&#x27;));motion.prepend(paneHead);
+  paneHead.append(el(&#x27;h3&#x27;,&#x27;&#x27;,&#x27;Spatial layout&#x27;),el(&#x27;span&#x27;,&#x27;text-small text-muted&#x27;,graph?&#x27;Fixed data · movable checks&#x27;:&#x27;Data and check qubits&#x27;));motion.prepend(paneHead);
   const stage=graph?el(&#x27;div&#x27;,&#x27;viewer-stage&#x27;):canvas.parentElement;stage.classList.add(&#x27;viewer-stage&#x27;);if(graph){canvas.before(stage);stage.append(canvas);}
   cameraTools(root,stage,canvas);
   const playback=el(&#x27;div&#x27;,&#x27;viewer-playback&#x27;);stage.after(playback);
@@ -3035,7 +3517,7 @@ const api={compile,select,positionsAt};if(typeof module!==&#x27;undefined&#x27;&
   }else{
    const legend=topNodes.filter(n=&gt;n.classList.contains(&#x27;aod-legend&#x27;));legend.forEach(n=&gt;{n.classList.add(&#x27;viewer-legend&#x27;);stage.after(n);});
    const times=node(&#x27;sector-times&#x27;);times.classList.add(&#x27;viewer-timing-summary&#x27;);config.after(times);
-   panelDetails(root,technical,&#x27;Code, layout and measurement conventions&#x27;,topNodes.filter(n=&gt;!legend.includes(n)&amp;&amp;n!==times));
+   panelDetails(root,technical,&#x27;Code, layout and measurement conventions&#x27;,topNodes.filter(n=&gt;!legend.includes(n)&amp;&amp;n!==times&amp;&amp;n!==node(&#x27;schedule-note&#x27;)));
    panelDetails(root,technical,&#x27;Selected atoms and trajectory diagnostics&#x27;,[node(&#x27;selected&#x27;)],true);
    // Move only explanatory text; all live matrices and coefficient controls remain beside the animation.
    panelDetails(root,technical,&#x27;Polynomial conventions&#x27;,[node(&#x27;lift-rule&#x27;)]);
