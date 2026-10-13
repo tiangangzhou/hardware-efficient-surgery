@@ -1,0 +1,206 @@
+{
+  "description": "Circuit-level counts behind Fig. 4: l = 33, idling vs X-type fibre surgery, 20 rounds, Relay-BP + BP-LSD. 'errors' counts shots in which any recorded logical observable is wrong over the whole experiment.",
+  "rounds": 20,
+  "snapshot_date": "2026-09-09",
+  "p0016_added": "2026-09-11",
+  "decoder": {
+    "relay_bp": {
+      "name": "RelayDecoderF32",
+      "pre_iter": 120,
+      "num_sets": 30,
+      "set_max_iter": 60,
+      "gamma0": 0.1,
+      "alpha": 0.85,
+      "alpha_iteration_scaling_factor": 1.0,
+      "gamma_dist_interval": [
+        0.1,
+        0.8
+      ],
+      "stop_nconv": 1,
+      "seed": 0
+    },
+    "bp_lsd": {
+      "ms_scaling_factor": 0.625,
+      "lsd_order": 5,
+      "max_iter": 100,
+      "bp_method": "minimum_sum",
+      "schedule": "serial",
+      "lsd_method": "lsd_e",
+      "omp_thread_count": 1
+    }
+  },
+  "columns": {
+    "num_shots": "shots decoded",
+    "errors": "shots with any logical observable error (T1 + T2)",
+    "relay_nonconverged": "shots on which Relay-BP did not converge and BP-LSD was run",
+    "shards": "number of fixed-size shards (25,000 shots each) combined",
+    "relay_errors": "p = 0.0016 only: shots on which Relay-BP converged to a wrong correction (T1); the archived points have them in failure_masks.json",
+    "failure_types": "p = 0.0016 only: failures with a wrong block observable only, time-like readout only, or both"
+  },
+  "results": [
+    {
+      "experiment": "Idling",
+      "basis": "X",
+      "p": 0.0016,
+      "num_shots": 5000000,
+      "errors": 2,
+      "source": "recorded by hand from the run summary; no per-shard data archived",
+      "relay_errors": 0,
+      "failure_types": {
+        "block_only": 2,
+        "time_only": 0,
+        "both": 0
+      }
+    },
+    {
+      "experiment": "Idling",
+      "basis": "Z",
+      "p": 0.0016,
+      "num_shots": 5000000,
+      "errors": 1,
+      "source": "recorded by hand from the run summary; no per-shard data archived",
+      "relay_errors": 0,
+      "failure_types": {
+        "block_only": 1,
+        "time_only": 0,
+        "both": 0
+      }
+    },
+    {
+      "experiment": "Surgery",
+      "basis": "X",
+      "p": 0.0016,
+      "num_shots": 5000000,
+      "errors": 1,
+      "source": "recorded by hand from the run summary; no per-shard data archived",
+      "relay_errors": 0,
+      "failure_types": {
+        "block_only": 0,
+        "time_only": 1,
+        "both": 0
+      }
+    },
+    {
+      "experiment": "Surgery",
+      "basis": "Z",
+      "p": 0.0016,
+      "num_shots": 5000000,
+      "errors": 4,
+      "source": "recorded by hand from the run summary; no per-shard data archived",
+      "relay_errors": 0,
+      "failure_types": {
+        "block_only": 4,
+        "time_only": 0,
+        "both": 0
+      }
+    },
+    {
+      "experiment": "Idling",
+      "basis": "X",
+      "p": 0.002,
+      "num_shots": 5000000,
+      "errors": 6,
+      "relay_nonconverged": 3313,
+      "shards": 200
+    },
+    {
+      "experiment": "Idling",
+      "basis": "Z",
+      "p": 0.002,
+      "num_shots": 5000000,
+      "errors": 10,
+      "relay_nonconverged": 3414,
+      "shards": 200
+    },
+    {
+      "experiment": "Surgery",
+      "basis": "X",
+      "p": 0.002,
+      "num_shots": 4000000,
+      "errors": 5,
+      "relay_nonconverged": 2219,
+      "shards": 160
+    },
+    {
+      "experiment": "Surgery",
+      "basis": "Z",
+      "p": 0.002,
+      "num_shots": 7000000,
+      "errors": 29,
+      "relay_nonconverged": 12501,
+      "shards": 280
+    },
+    {
+      "experiment": "Idling",
+      "basis": "X",
+      "p": 0.0025,
+      "num_shots": 3000000,
+      "errors": 29,
+      "relay_nonconverged": 6881,
+      "shards": 120
+    },
+    {
+      "experiment": "Idling",
+      "basis": "Z",
+      "p": 0.0025,
+      "num_shots": 3000000,
+      "errors": 23,
+      "relay_nonconverged": 6695,
+      "shards": 120
+    },
+    {
+      "experiment": "Surgery",
+      "basis": "X",
+      "p": 0.0025,
+      "num_shots": 2775000,
+      "errors": 24,
+      "relay_nonconverged": 4582,
+      "shards": 111
+    },
+    {
+      "experiment": "Surgery",
+      "basis": "Z",
+      "p": 0.0025,
+      "num_shots": 3000000,
+      "errors": 115,
+      "relay_nonconverged": 24732,
+      "shards": 120
+    },
+    {
+      "experiment": "Idling",
+      "basis": "X",
+      "p": 0.003,
+      "num_shots": 450000,
+      "errors": 17,
+      "relay_nonconverged": 2989,
+      "shards": 18
+    },
+    {
+      "experiment": "Idling",
+      "basis": "Z",
+      "p": 0.003,
+      "num_shots": 500000,
+      "errors": 27,
+      "relay_nonconverged": 3319,
+      "shards": 20
+    },
+    {
+      "experiment": "Surgery",
+      "basis": "X",
+      "p": 0.003,
+      "num_shots": 500000,
+      "errors": 17,
+      "relay_nonconverged": 2214,
+      "shards": 20
+    },
+    {
+      "experiment": "Surgery",
+      "basis": "Z",
+      "p": 0.003,
+      "num_shots": 500000,
+      "errors": 231,
+      "relay_nonconverged": 18594,
+      "shards": 20
+    }
+  ]
+}

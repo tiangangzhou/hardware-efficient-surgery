@@ -1,0 +1,36 @@
+{
+  "description": "Sinter statistics behind the l = 9 circuit-level LER figure of the Supplemental Material. Each row is one task (mode, basis, p) with 10 noisy syndrome rounds, decoded by Relay-BP with a BP-LSD fallback (min-sum scaling 0.625); task metadata and custom counts are as written by sinter.",
+  "campaigns": {
+    "parent": {
+      "file": "parent.csv",
+      "sha256": "83014f1688cb22f2bcd53d734767b50c3d8f44eec9904ed7976c1c916f1fc8c6",
+      "date": "2026-09-24",
+      "tasks": 40,
+      "shots": 4062227,
+      "sampling": "each task stops at 200,000 shots or 100 logical failures, whichever comes first",
+      "max_shots": 200000,
+      "max_errors": 100
+    },
+    "topup": {
+      "file": "topup.csv",
+      "sha256": "9262ab90d4732d876388d85930463344f2f70a597ff35844d282cc22481e458e",
+      "date": "2026-09-25",
+      "tasks": 8,
+      "shots": 6974464,
+      "sampling": "the eight p = 0.001 tasks extended towards 10,000,000 shots or 10 logical failures; the packet X extension was stopped early at 2,825,536 shots, all of which were decoded",
+      "max_shots": 10000000,
+      "max_errors": 10
+    }
+  },
+  "aggregation_rule": "Each top-up row replaces the parent row of the same task (same strong_id): its counts already include the parent's 200,000 shots, so the two must not be added.",
+  "totals": {
+    "tasks": 40,
+    "shots": 9436691,
+    "errors": 3178
+  },
+  "custom_counts": {
+    "obs_mistake_mask=...": "failed shots by pattern of wrong observables ('E' = wrong); block observables first, then time-like surgery readouts",
+    "relay_nonconverged": "shots on which Relay-BP did not converge (sent to BP-LSD)",
+    "lsd_solved": "non-converged shots finalised by BP-LSD (equals relay_nonconverged)"
+  }
+}

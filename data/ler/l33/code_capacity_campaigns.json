@@ -1,0 +1,79 @@
+{
+  "description": "Code-capacity campaigns behind the Supplemental Material table. Each shard is one single-worker cluster run for one (code, basis, p) with its own base seed, stopping at shot_cap shots or max_errors failures. The per-shard wrapper is not archived: run_code_capacity.py implements the same codes, noise model and decoder, but re-running a shard with its seed gives statistically equivalent, not identical, counts.",
+  "excluded_from_table": "p = 0.01 shards of sweep_20260909 (outside the reported range p = 0.015-0.05)",
+  "campaigns": {
+    "sweep_20260909": {
+      "created": "2026-09-09T15:08:14.679202+02:00",
+      "decoder": {
+        "bp_method": "minimum_sum",
+        "schedule": "serial",
+        "max_iter": 100,
+        "ms_scaling_factor": 0.625,
+        "lsd_method": "lsd_e",
+        "lsd_order": 5,
+        "omp_thread_count": 1
+      },
+      "workers_per_shard": 1,
+      "max_errors_per_shard": 100,
+      "fixed_shot_count": false,
+      "shards": 68,
+      "versions": {
+        "numpy": "2.2.6",
+        "scipy": "1.15.3",
+        "ldpc": "2.4.1",
+        "sinter": "1.16.0",
+        "relay-bp": "0.2.1"
+      }
+    },
+    "p0015_batch1_20260909": {
+      "created": "2026-09-09T22:20:04.283393+02:00",
+      "decoder": {
+        "bp_method": "minimum_sum",
+        "schedule": "serial",
+        "max_iter": 100,
+        "ms_scaling_factor": 0.625,
+        "lsd_method": "lsd_e",
+        "lsd_order": 5,
+        "omp_thread_count": 1
+      },
+      "workers_per_shard": 1,
+      "max_errors_per_shard": 100000000,
+      "fixed_shot_count": true,
+      "shards": 160,
+      "versions": {
+        "numpy": "2.2.6",
+        "scipy": "1.15.3",
+        "ldpc": "2.4.1",
+        "sinter": "1.16.0",
+        "relay-bp": "0.2.1"
+      },
+      "p": 0.015,
+      "shots_per_code_and_basis": 10000000
+    },
+    "p0015_batch2_20260910": {
+      "created": "2026-09-10T14:10:13.405676+00:00",
+      "decoder": {
+        "bp_method": "minimum_sum",
+        "schedule": "serial",
+        "max_iter": 100,
+        "ms_scaling_factor": 0.625,
+        "lsd_method": "lsd_e",
+        "lsd_order": 5,
+        "omp_thread_count": 1
+      },
+      "workers_per_shard": 1,
+      "max_errors_per_shard": 100000000,
+      "fixed_shot_count": true,
+      "shards": 160,
+      "versions": {
+        "numpy": "2.2.6",
+        "scipy": "1.15.3",
+        "ldpc": "2.4.1",
+        "sinter": "1.16.0",
+        "relay-bp": "0.2.1"
+      },
+      "p": 0.015,
+      "shots_per_code_and_basis": 10000000
+    }
+  }
+}
