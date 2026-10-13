@@ -1,0 +1,132 @@
+{
+  "metric": "code qubits (data + auxiliary) plus one syndrome atom per X/Z check row",
+  "scope": "all l canonical logical Z operators of one fibre; graph methods as an l-fold union",
+  "rows": [
+    {
+      "lift": 9,
+      "method": "memory",
+      "total_qubits": 306,
+      "checks_x": 135,
+      "checks_z": 135,
+      "data_qubits": 306,
+      "auxiliary_qubits": 0,
+      "total_physical_qubits": 576
+    },
+    {
+      "lift": 9,
+      "method": "algebraic",
+      "total_qubits": 585,
+      "checks_x": 243,
+      "checks_z": 315,
+      "data_qubits": 306,
+      "auxiliary_qubits": 279,
+      "total_physical_qubits": 1143
+    },
+    {
+      "lift": 9,
+      "method": "gauging",
+      "total_qubits": 459,
+      "checks_x": 207,
+      "checks_z": 225,
+      "restored_flux_checks": 0,
+      "data_qubits": 306,
+      "auxiliary_qubits": 153,
+      "total_physical_qubits": 891
+    },
+    {
+      "lift": 9,
+      "method": "edge_expansion",
+      "total_qubits": 459,
+      "checks_x": 205,
+      "checks_z": 225,
+      "restored_flux_checks": 16,
+      "data_qubits": 306,
+      "auxiliary_qubits": 153,
+      "total_physical_qubits": 889
+    },
+    {
+      "lift": 15,
+      "method": "memory",
+      "total_qubits": 510,
+      "checks_x": 225,
+      "checks_z": 225,
+      "data_qubits": 510,
+      "auxiliary_qubits": 0,
+      "total_physical_qubits": 960
+    },
+    {
+      "lift": 15,
+      "method": "algebraic",
+      "total_qubits": 975,
+      "checks_x": 405,
+      "checks_z": 525,
+      "data_qubits": 510,
+      "auxiliary_qubits": 465,
+      "total_physical_qubits": 1905
+    },
+    {
+      "lift": 15,
+      "method": "gauging",
+      "total_qubits": 1140,
+      "checks_x": 540,
+      "checks_z": 555,
+      "restored_flux_checks": 0,
+      "data_qubits": 510,
+      "auxiliary_qubits": 630,
+      "total_physical_qubits": 2235
+    },
+    {
+      "lift": 15,
+      "method": "edge_expansion",
+      "total_qubits": 1125,
+      "checks_x": 523,
+      "checks_z": 555,
+      "restored_flux_checks": 28,
+      "data_qubits": 510,
+      "auxiliary_qubits": 615,
+      "total_physical_qubits": 2203
+    },
+    {
+      "lift": 33,
+      "method": "memory",
+      "total_qubits": 1122,
+      "checks_x": 495,
+      "checks_z": 495,
+      "data_qubits": 1122,
+      "auxiliary_qubits": 0,
+      "total_physical_qubits": 2112
+    },
+    {
+      "lift": 33,
+      "method": "algebraic",
+      "total_qubits": 2442,
+      "checks_x": 1023,
+      "checks_z": 1320,
+      "data_qubits": 1122,
+      "auxiliary_qubits": 1320,
+      "total_physical_qubits": 4785
+    },
+    {
+      "lift": 33,
+      "method": "gauging",
+      "total_qubits": 4125,
+      "checks_x": 2079,
+      "checks_z": 1947,
+      "restored_flux_checks": 0,
+      "data_qubits": 1122,
+      "auxiliary_qubits": 3003,
+      "total_physical_qubits": 8151
+    },
+    {
+      "lift": 33,
+      "method": "edge_expansion",
+      "total_qubits": 4125,
+      "checks_x": 2077,
+      "checks_z": 1947,
+      "restored_flux_checks": 64,
+      "data_qubits": 1122,
+      "auxiliary_qubits": 3003,
+      "total_physical_qubits": 8149
+    }
+  ]
+}
