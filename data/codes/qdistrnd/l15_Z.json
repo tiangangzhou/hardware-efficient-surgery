@@ -1,0 +1,46 @@
+{
+  "ell": 15,
+  "pauli": "Z",
+  "n": 975,
+  "k": 59,
+  "gap_version": "4.15.1",
+  "qdistrnd_version": "0.9.5",
+  "seed": 260920,
+  "debug": 15,
+  "mindist": 0,
+  "maxav": 5.3,
+  "maximum_information_sets": 1000000,
+  "status": "complete",
+  "information_sets": 2967,
+  "distance_upper_bound": 10,
+  "total_best_weight_hits": 1357,
+  "tracked_distinct_vectors": 100,
+  "tracked_hits": 531,
+  "mean_multiplicity": 5.31,
+  "pearson_diagnostic": {
+    "df": 99,
+    "statistic": 111.7495291902072,
+    "asymptotic_p_value": 0.17963152354547496
+  },
+  "seconds": 27.6,
+  "inputs": {
+    "hx": {
+      "file": "l15_hx.mtx",
+      "shape": [
+        405,
+        975
+      ],
+      "rank": 399,
+      "sha256": "ebcf772cf18dd417cce076ec8b52fc765f836f558a2a828e22525c146250f6db"
+    },
+    "hz": {
+      "file": "l15_hz.mtx",
+      "shape": [
+        525,
+        975
+      ],
+      "rank": 517,
+      "sha256": "a80e5cf746cfb14ad3132b624872088587ffa75f3ae79fecdd0ac1fa751d23ee"
+    }
+  }
+}

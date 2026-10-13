@@ -1,0 +1,17 @@
+{
+  "description": "Explicit nontrivial logical operators of the merged codes of algebraic fibre surgery (instances I-III, lifts 9, 15, 33). Supports are zero-based qubit indices in the ordering of algebraic_qec.examples.surgery_instances (data qubits first, then auxiliary qubits). Each support is checked by verify_instances.py; a support of weight w gives the upper bound w on that sector's distance.",
+  "witnesses": {
+    "9": {
+      "X": [180, 184, 195, 200, 204, 207, 218, 220, 441],
+      "Z": [72, 73, 118, 119, 123, 164, 168, 207]
+    },
+    "15": {
+      "X": [300, 315, 328, 329, 336, 357, 366, 372, 373, 374, 702],
+      "Z": [0, 75, 88, 89, 156, 237, 306, 312, 313, 314]
+    },
+    "33": {
+      "X": [660, 663, 677, 682, 693, 707, 714, 724, 729, 731, 736, 740, 748, 757, 759, 792, 797, 802, 809, 813, 1683],
+      "Z": [0, 1, 14, 15, 23, 28, 165, 173, 179, 180, 181, 193, 335, 346, 351, 496, 500, 668, 681, 683]
+    }
+  }
+}

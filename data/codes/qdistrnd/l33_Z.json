@@ -1,0 +1,43 @@
+{
+  "ell": 33,
+  "pauli": "Z",
+  "n": 2442,
+  "k": 113,
+  "gap_version": "4.15.1",
+  "qdistrnd_version": "0.9.5",
+  "seed": 260920,
+  "debug": 15,
+  "mindist": 0,
+  "maxav": 5.3,
+  "maximum_information_sets": 10000000,
+  "status": "timeout",
+  "information_sets": 6823800,
+  "distance_upper_bound": 20,
+  "total_best_weight_hits": 13233,
+  "tracked_distinct_vectors": 100,
+  "tracked_hits": 396,
+  "mean_multiplicity": 3.96,
+  "pearson_diagnostic": null,
+  "seconds": 604800.0,
+  "inputs": {
+    "hx": {
+      "file": "l33_hx.mtx",
+      "shape": [
+        1023,
+        2442
+      ],
+      "rank": 1017,
+      "sha256": "e004c5f352ec15749b30e4952bda1c21e05bea7acb69bf3d4433750a1a8185bc"
+    },
+    "hz": {
+      "file": "l33_hz.mtx",
+      "shape": [
+        1320,
+        2442
+      ],
+      "rank": 1312,
+      "sha256": "1ad80b87c59f4c2fd3d70127067a5ee07dc38883b896498a4d2e4193afbc9e39"
+    }
+  },
+  "note": "The search stopped at its 604800-second (seven-day) timeout before the maxav threshold. The counts are those of the last progress checkpoint printed by QDistRnd (round 6823800); total_best_weight_hits is the checkpoint count."
+}
