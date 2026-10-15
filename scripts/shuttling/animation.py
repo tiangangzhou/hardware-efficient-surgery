@@ -1,22 +1,19 @@
-"""Read (and, for the graph models, rewrite) the data of the animation ``lp-surgery-aod-polynomials.html``.
+"""Read and rewrite the data of the animation ``lp-surgery-aod-polynomials.html``.
 
 The page keeps its player in an iframe ``data-srcdoc`` attribute.  The player holds the
-JavaScript schedulers and two gzip/base64 JSON blocks: ``aod-model-data`` (memory and
-algebraic fibre-surgery models) and ``hybrid-source`` (Graph-WY / Graph-IGND models and
-the bare LP routes they attach to).  Repeated objects of a block are stored once in its
-``pool`` and referenced as ``{"$modelRef": i}`` or ``{"$hybridRef": i}``; the player's
-``unpackModels`` / ``unpackHybrid`` expand them.
+JavaScript schedulers and two gzip/base64 JSON blocks (encoded by ``packing``):
+``aod-model-data`` (memory and algebraic surgery models, ``build_lp_models.py``) and
+``hybrid-source`` (Graph-WY / Graph-IGND models, ``build_graph_gadgets.py``, and the bare
+LP routes they attach to, ``build_lp_models.py``).  The player itself is not generated.
 """
 
 from __future__ import annotations
 
-import base64
-import collections
-import gzip
 import html
-import json
 import re
 from pathlib import Path
+
+from packing import canonical_destinations, compact_destinations, decode, encode, intern, resolve
 
 DOCUMENT = Path(__file__).resolve().parents[2] / "lp-surgery-aod-polynomials.html"
 
@@ -39,18 +36,7 @@ def block_body(player: str, element: str) -> str:
 
 def packed(player: str, element: str) -> dict:
     """Decode one gzip/base64 JSON block, still in its packed form."""
-    return json.loads(gzip.decompress(base64.b64decode(block_body(player, element))))
-
-
-def resolve(value, pool: list, key: str):
-    """Replace every reference ``{key: i}`` by ``pool[i]``, recursively."""
-    if isinstance(value, list):
-        return [resolve(v, pool, key) for v in value]
-    if isinstance(value, dict):
-        if key in value:
-            return resolve(pool[value[key]], pool, key)
-        return {k: resolve(v, pool, key) for k, v in value.items()}
-    return value
+    return decode(block_body(player, element))
 
 
 def graph_models(player: str) -> list[dict]:
@@ -65,78 +51,25 @@ def graph_models(player: str) -> list[dict]:
 
 
 def write_graph_models(models: list[dict], document: Path = DOCUMENT) -> None:
-    """Replace the graph models of ``hybrid-source`` and repack the block as the animation's
-    builder does (``scripts/aod_animation/pack_hybrid.py`` of algebraic-qec): canonical
-    destinations compacted, repeated containers shared through the pool, gzip level 9
-    with mtime 0.  Repacking the unchanged block reproduces it byte for byte."""
-    text = document.read_text()
-    body = block_body(fragment(document), "hybrid-source")
-    source = json.loads(gzip.decompress(base64.b64decode(body)))
+    """Replace the graph models of ``hybrid-source``, keeping its bare LP routes."""
+    source = packed(fragment(document), "hybrid-source")
     payload = resolve(source["payload"], source["pool"], "$hybridRef")
     payload["graph"]["models"] = [
         dict(model, layers=[compact_destinations(layer, model["n"]) for layer in model["layers"]])
         for model in models
     ]
-    raw = json.dumps(intern(payload), separators=(",", ":"), ensure_ascii=False).encode()
-    new_body = base64.b64encode(gzip.compress(raw, compresslevel=9, mtime=0)).decode("ascii")
-    if text.count(body) != 1:
-        raise ValueError("the hybrid-source block is not unique in the page")
-    document.write_text(text.replace(body, new_body))
+    write_blocks({"hybrid-source": encode(intern(payload, "$hybridRef", 40, source["format"]))})
 
 
-def compact_destinations(layer: dict, n: int) -> dict:
-    if layer["destinations"] != canonical_destinations(layer, n):
-        return layer
-    return dict(layer, destinations={"hybridCanonicalDestinations": True})
-
-
-def intern(payload) -> dict:
-    """Share every container whose JSON (at least 40 characters) occurs more than once."""
-    signature = lambda x: json.dumps(x, separators=(",", ":"), ensure_ascii=False)
-    counts: collections.Counter[str] = collections.Counter()
-
-    def count(x) -> None:
-        if isinstance(x, (list, dict)):
-            if len(s := signature(x)) >= 40:
-                counts[s] += 1
-            for v in x if isinstance(x, list) else x.values():
-                count(v)
-
-    count(payload)
-    pool: list = []
-    lookup: dict[str, int] = {}
-
-    def encode(x):
-        if not isinstance(x, (list, dict)):
-            return x
-        s = signature(x)
-        shared = counts.get(s, 0) > 1
-        if shared and s in lookup:
-            return {"$hybridRef": lookup[s]}
-        body = [encode(v) for v in x] if isinstance(x, list) else {k: encode(v) for k, v in x.items()}
-        if not shared:
-            return body
-        lookup[s] = len(pool)
-        pool.append(body)
-        return {"$hybridRef": lookup[s]}
-
-    root = encode(payload)
-    return dict(format="hybrid-source-v1", pool=pool, payload=root)
-
-
-def canonical_destinations(layer: dict, n: int) -> list[int]:
-    """Route of a matching layer: pairs map r -> c, other active slots park at n, n + 1, ...,
-    and the remaining slots fill the free positions in order."""
-    dest = [-1] * (layer["active"] + n)
-    for r, c in layer["pairs"]:
-        dest[r] = c
-    parking = iter(range(n, len(dest)))
-    for i in range(layer["active"]):
-        if dest[i] < 0:
-            dest[i] = next(parking)
-    occupied = set(dest)
-    free = iter(i for i in range(len(dest)) if i not in occupied)
-    return [next(free) if x < 0 else x for x in dest]
+def write_blocks(bodies: dict[str, str], document: Path = DOCUMENT) -> None:
+    """Replace the gzip/base64 text of the given blocks."""
+    text, player = document.read_text(), fragment(document)
+    for element, body in bodies.items():
+        old = block_body(player, element)
+        if text.count(old) != 1:
+            raise ValueError(f"the #{element} block is not unique in the page")
+        text = text.replace(old, body)
+    document.write_text(text)
 
 
 def function_source(player: str, name: str) -> str:

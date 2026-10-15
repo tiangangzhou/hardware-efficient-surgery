@@ -8,7 +8,9 @@ Frozen inputs and published results read by the scripts in `scripts/`.
   average per round (ms) for every lift, protocol and AOD-pair budget. Regenerated
   exactly by `scripts/shuttling/extract_timings.py` from the animation
   `lp-surgery-aod-polynomials.html`, whose embedded JavaScript schedulers compute
-  all times (tested with Node v25).
+  all times (tested with Node v25) from its data blocks: the memory and algebraic
+  surgery models and bare LP routes (rebuilt by `scripts/shuttling/build_lp_models.py`)
+  and the graph gadgets (below).
 - `space_overhead.json` — physical-qubit counts of the bottom panel of Fig. 3.
 - `gadgets/l{9,15,33}_{gauging,edge_expansion}.npz` — the Graph-WY / Graph-IGND
   gadgets (merged check matrices and mapping-cone maps) for one canonical logical,

@@ -1,4 +1,5 @@
-"""The shuttling scripts reproduce Table S2, the gadgets, the space counts and Fig. 3."""
+"""The shuttling scripts reproduce the animation data, Table S2, the gadgets, the space counts
+and Fig. 3."""
 
 from __future__ import annotations
 
@@ -17,6 +18,11 @@ def test_table_s2():
     assert "All 48 memory/fibre schedules pass verify.cjs." in out
     assert "33&Algebraic fibre&25.48&29.36&54.84&30.430&16.34&18.85&34.60&19.728" in out
     assert "matches table_s2.csv" in out
+
+
+def test_lp_models():
+    out = run("shuttling/build_lp_models.py")
+    assert "24 models (checked) and 6 bare LP routes match the animation" in out
 
 
 @pytest.mark.slow

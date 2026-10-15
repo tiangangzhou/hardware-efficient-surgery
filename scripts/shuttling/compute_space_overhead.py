@@ -20,7 +20,8 @@ import json
 from pathlib import Path
 
 import numpy as np
-from animation import fragment, packed, resolve
+from animation import fragment, packed
+from packing import resolve
 from qldpc.codes.common import CSSCode
 from qldpc.objects import Pauli
 from scipy import sparse

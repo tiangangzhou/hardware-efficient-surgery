@@ -53,6 +53,7 @@ script takes seconds and checks or prints the published numbers.
 | CRT-packet selection, table of CRT unions for l = 33 | `scripts/codes/crt_packets.py` |
 | Algebraic adapters with unequal lifts | `scripts/codes/adapters.py` |
 | QDistRnd distance table | `scripts/codes/qdistrnd.py summarize` |
+| Animation data: memory / algebraic surgery models, bare LP routes | `scripts/shuttling/build_lp_models.py` |
 | Table S2 (shuttling and gate times) | `scripts/shuttling/extract_timings.py` |
 | Graph-WY / Graph-IGND gadgets, exact Cheeger constants h ≥ 1 (~2 min) | `scripts/shuttling/build_graph_gadgets.py` |
 | Fig. 3 qubit counts / figure | `scripts/shuttling/compute_space_overhead.py`, `scripts/shuttling/plot_fig3.py` |
@@ -75,7 +76,9 @@ uv run python scripts/ler/l33/plot_fig4.py --stats l33.csv --out l33.pdf
 
 The published data took hundreds of core-days on a cluster. The shuttling
 animation is the source of all timings: its embedded JavaScript schedulers are
-replayed by `scripts/shuttling/extract.cjs`.
+replayed by `scripts/shuttling/extract.cjs` on its data blocks, which
+`scripts/shuttling/build_lp_models.py` (compiler in `scripts/shuttling/lp_compiler/`)
+and `build_graph_gadgets.py` regenerate byte for byte.
 
 ## Tests
 
