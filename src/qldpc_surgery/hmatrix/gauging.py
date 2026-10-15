@@ -9,7 +9,7 @@ with boundary(mu) = supp(s) & supp(x) (Lemma 1; written here for an X measuremen
 The graph follows steps 1-2 of Theorem 3: pair up the qubits of every check
 intersection, then add edges until the Cheeger constant h is 1 (here with Algorithm 1
 of arXiv:2410.02753). With h >= 1 the deformed code keeps the distance (Lemma 2);
-h is computed exactly only for |V| <= 20. Steps 3-4 (layers, decongestion) are not
+Algorithm 1 stops only once h >= 1 holds exactly. Steps 3-4 (layers, decongestion) are not
 implemented: long flux cycles are cut by chords instead (``edge_expansion.cellulate``),
 which cannot lower h.
 """

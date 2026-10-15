@@ -19,11 +19,14 @@ def test_table_s2():
     assert "matches table_s2.csv" in out
 
 
+@pytest.mark.slow
 def test_graph_gadgets_and_space():
-    assert run("shuttling/build_graph_gadgets.py").count("matches the animation") == 6
+    out = run("shuttling/build_graph_gadgets.py")
+    assert out.count("h = 1.000  matches the animation") == 6
     out = run("shuttling/compute_space_overhead.py")
     assert "l=33 algebraic        4785 physical qubits" in out
-    assert "l=33 gauging          8151 physical qubits" in out
+    assert "l=33 gauging          8481 physical qubits" in out
+    assert "l=33 edge_expansion   8545 physical qubits" in out
     assert "matches space_overhead.json" in out
 
 

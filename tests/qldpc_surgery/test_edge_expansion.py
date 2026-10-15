@@ -11,6 +11,7 @@ from qldpc import codes
 from qldpc.codes.common import CSSCode
 from qldpc.objects import Pauli
 
+from qldpc_surgery.hmatrix import edge_expansion
 from qldpc_surgery.hmatrix.edge_expansion import (
     _fiedler_sweep_cuts,
     algorithm_1,
@@ -86,11 +87,15 @@ def test_example_7_hamming_support_needs_two_edges() -> None:
     assert len(expanded) - len(d1_star) == 2 and cheeger_constant(expanded) >= 1
 
 
-def test_cheeger_constant_and_sparsest_cut_are_exact() -> None:
+@pytest.mark.parametrize("max_enumerated", [20, 0], ids=["enumeration", "integer_program"])
+def test_cheeger_constant_and_sparsest_cut_are_exact(monkeypatch, max_enumerated) -> None:
+    monkeypatch.setattr(edge_expansion, "_EXACT_CHEEGER_MAX_V", max_enumerated)
     rng = np.random.default_rng(0)
     for _ in range(20):
         n_v = int(rng.integers(2, 9))
-        incidence = graph([rng.choice(n_v, 2, replace=False) for _ in range(n_v + 2)], n_v)
+        edges = [rng.choice(n_v, 2, replace=False) for _ in range(n_v + 2)]
+        edges += [rng.choice(n_v, 4, replace=False) for _ in range(2 if n_v >= 4 else 0)]
+        incidence = graph(edges, n_v)
         best = min(
             (incidence[:, list(S)].sum(axis=1) % 2).sum() / len(S)
             for size in range(1, n_v // 2 + 1)
@@ -100,12 +105,36 @@ def test_cheeger_constant_and_sparsest_cut_are_exact() -> None:
         assert h == pytest.approx(best) == (incidence @ S % 2).sum() / S.sum()
 
 
-def test_fiedler_sweep_overestimates_and_algorithm_1_reaches_one_above_20_vertices() -> None:
-    small = grid(4)
-    sweep = _fiedler_sweep_cuts(small)
-    assert ((small @ sweep.T % 2).sum(axis=0) / sweep.sum(axis=1)).min() >= cheeger_constant(small)
-    large = grid(6)  # 36 vertices: Fiedler sweep estimate
-    assert cheeger_constant(algorithm_1(large)) >= 1
+def test_cheeger_constant_is_exact_above_20_vertices(monkeypatch) -> None:
+    """Above 20 vertices h is the minimum over all cuts (integer program), not over the
+    Fiedler (Laplacian) sweep cuts, which only bound it from above. Here the sparsest cut
+    splits a weight-4 hyperedge 2|2, which the clique Laplacian charges 4 and the parity
+    boundary 0."""
+    ring = [(v, (v + 1) % 21) for v in range(21)]
+    chords = [(17, 13), (6, 5), (0, 1), (16, 13), (10, 12), (14, 13), (19, 11), (14, 16)]
+    incidence = graph(ring + chords + [(7, 16, 11, 0), (1, 0, 3, 17)], 21)
+    sweep = _fiedler_sweep_cuts(incidence)
+    assert ((incidence @ sweep.T % 2).sum(axis=0) / sweep.sum(axis=1)).min() == 0.375
+    h, S = sparsest_cut(incidence)
+    assert h == pytest.approx(0.3) == (incidence @ S % 2).sum() / S.sum()
+    monkeypatch.setattr(edge_expansion, "_EXACT_CHEEGER_MAX_V", 21)
+    assert cheeger_constant(incidence) == pytest.approx(0.3)  # by enumeration
+    ring = graph([(v, (v + 1) % 30) for v in range(30)], 30)
+    assert cheeger_constant(ring) == pytest.approx(2 / 15)  # the two half rings
+
+
+def test_algorithm_1_certifies_h_above_20_vertices(monkeypatch) -> None:
+    """Above 20 vertices Algorithm 1 stops only when no cut has |dS| < |S|; stopping once
+    the sweep cuts reach 1 left h = 5/6 on this ring with chords. The result does not
+    depend on the sign LAPACK gives the Fiedler vector."""
+    ring = [(v, (v + 1) % 24) for v in range(24)]
+    incidence = graph(ring + [(19, 15), (7, 6), (0, 1), (18, 15)], 24)
+    expanded = algorithm_1(incidence)
+    assert cheeger_constant(expanded) >= 1
+    assert np.array_equal(expanded[: len(incidence)], incidence)
+    eigh = np.linalg.eigh
+    monkeypatch.setattr(np.linalg, "eigh", lambda a: (lambda w, v: (w, -v))(*eigh(a)))
+    assert np.array_equal(algorithm_1(incidence), expanded)
 
 
 def test_algorithm_2_complements_the_cycles_of_the_data_checks() -> None:
@@ -159,12 +188,14 @@ def test_algorithm_3_cellulates_when_d0_is_too_heavy() -> None:
 
 
 def test_gross_code_cycle_weights() -> None:
-    """Regression of Algorithm 2 on the gross code (weight profile and 4-cycles)."""
+    """Regression of Algorithm 2 on the gross code (weight profile and 4-cycles), on the
+    24-vertex graph that Algorithm 1 expands to h = 1 (regenerated when h became exact)."""
     x, y = sympy.symbols("x y")
     code = codes.BBCode((12, 6), x**3 + y + y**2, y**3 + x + x**2)
     f1, d1, f0, d0 = algorithm_3(
         np.asarray(code.matrix_z, np.uint8), np.asarray(code.get_logical_ops(Pauli.X)[0], np.uint8)
     )
-    assert sorted(d0.sum(axis=1)) == [3, 3, 3, 4, 4, 4, 5, 5, 6, 6, 6, 6]
+    assert cheeger_constant(d1) == 1
+    assert sorted(d0.sum(axis=1)) == [2] + [3] * 5 + [4] * 10 + [5] * 5
     rows = [set(np.flatnonzero(r)) for r in np.vstack([f0, d0])]
-    assert sum(len(a & b) >= 2 for a, b in itertools.combinations(rows, 2)) == 2
+    assert sum(len(a & b) >= 2 for a, b in itertools.combinations(rows, 2)) == 0

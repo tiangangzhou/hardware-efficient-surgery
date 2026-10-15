@@ -1,4 +1,4 @@
-"""Read the data embedded in the published animation ``lp-surgery-aod-polynomials.html``.
+"""Read (and, for the graph models, rewrite) the data of the animation ``lp-surgery-aod-polynomials.html``.
 
 The page keeps its player in an iframe ``data-srcdoc`` attribute.  The player holds the
 JavaScript schedulers and two gzip/base64 JSON blocks: ``aod-model-data`` (memory and
@@ -11,6 +11,7 @@ the bare LP routes they attach to).  Repeated objects of a block are stored once
 from __future__ import annotations
 
 import base64
+import collections
 import gzip
 import html
 import json
@@ -28,12 +29,17 @@ def fragment(document: Path = DOCUMENT) -> str:
     return html.unescape(match[1])
 
 
-def packed(player: str, element: str) -> dict:
-    """Decode one gzip/base64 JSON block, still in its packed form."""
+def block_body(player: str, element: str) -> str:
+    """The gzip/base64 text of one block (base64 needs no HTML escaping in the page)."""
     bodies = re.findall(r'<script[^>]*id="' + element + r'"[^>]*>([^<]*)</script>', player)
     if len(bodies) != 1:
         raise ValueError(f"expected one #{element} block, found {len(bodies)}")
-    return json.loads(gzip.decompress(base64.b64decode(bodies[0])))
+    return bodies[0]
+
+
+def packed(player: str, element: str) -> dict:
+    """Decode one gzip/base64 JSON block, still in its packed form."""
+    return json.loads(gzip.decompress(base64.b64decode(block_body(player, element))))
 
 
 def resolve(value, pool: list, key: str):
@@ -56,6 +62,66 @@ def graph_models(player: str) -> list[dict]:
             if isinstance(layer["destinations"], dict):  # compact "canonical destinations"
                 layer["destinations"] = canonical_destinations(layer, model["n"])
     return models
+
+
+def write_graph_models(models: list[dict], document: Path = DOCUMENT) -> None:
+    """Replace the graph models of ``hybrid-source`` and repack the block as the animation's
+    builder does (``scripts/aod_animation/pack_hybrid.py`` of algebraic-qec): canonical
+    destinations compacted, repeated containers shared through the pool, gzip level 9
+    with mtime 0.  Repacking the unchanged block reproduces it byte for byte."""
+    text = document.read_text()
+    body = block_body(fragment(document), "hybrid-source")
+    source = json.loads(gzip.decompress(base64.b64decode(body)))
+    payload = resolve(source["payload"], source["pool"], "$hybridRef")
+    payload["graph"]["models"] = [
+        dict(model, layers=[compact_destinations(layer, model["n"]) for layer in model["layers"]])
+        for model in models
+    ]
+    raw = json.dumps(intern(payload), separators=(",", ":"), ensure_ascii=False).encode()
+    new_body = base64.b64encode(gzip.compress(raw, compresslevel=9, mtime=0)).decode("ascii")
+    if text.count(body) != 1:
+        raise ValueError("the hybrid-source block is not unique in the page")
+    document.write_text(text.replace(body, new_body))
+
+
+def compact_destinations(layer: dict, n: int) -> dict:
+    if layer["destinations"] != canonical_destinations(layer, n):
+        return layer
+    return dict(layer, destinations={"hybridCanonicalDestinations": True})
+
+
+def intern(payload) -> dict:
+    """Share every container whose JSON (at least 40 characters) occurs more than once."""
+    signature = lambda x: json.dumps(x, separators=(",", ":"), ensure_ascii=False)
+    counts: collections.Counter[str] = collections.Counter()
+
+    def count(x) -> None:
+        if isinstance(x, (list, dict)):
+            if len(s := signature(x)) >= 40:
+                counts[s] += 1
+            for v in x if isinstance(x, list) else x.values():
+                count(v)
+
+    count(payload)
+    pool: list = []
+    lookup: dict[str, int] = {}
+
+    def encode(x):
+        if not isinstance(x, (list, dict)):
+            return x
+        s = signature(x)
+        shared = counts.get(s, 0) > 1
+        if shared and s in lookup:
+            return {"$hybridRef": lookup[s]}
+        body = [encode(v) for v in x] if isinstance(x, list) else {k: encode(v) for k, v in x.items()}
+        if not shared:
+            return body
+        lookup[s] = len(pool)
+        pool.append(body)
+        return {"$hybridRef": lookup[s]}
+
+    root = encode(payload)
+    return dict(format="hybrid-source-v1", pool=pool, payload=root)
 
 
 def canonical_destinations(layer: dict, n: int) -> list[int]:

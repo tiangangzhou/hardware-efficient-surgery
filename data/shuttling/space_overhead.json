@@ -67,24 +67,24 @@
     {
       "lift": 15,
       "method": "gauging",
-      "total_qubits": 1140,
-      "checks_x": 540,
+      "total_qubits": 1200,
+      "checks_x": 600,
       "checks_z": 555,
       "restored_flux_checks": 0,
       "data_qubits": 510,
-      "auxiliary_qubits": 630,
-      "total_physical_qubits": 2235
+      "auxiliary_qubits": 690,
+      "total_physical_qubits": 2355
     },
     {
       "lift": 15,
       "method": "edge_expansion",
-      "total_qubits": 1125,
-      "checks_x": 523,
+      "total_qubits": 1215,
+      "checks_x": 613,
       "checks_z": 555,
       "restored_flux_checks": 28,
       "data_qubits": 510,
-      "auxiliary_qubits": 615,
-      "total_physical_qubits": 2203
+      "auxiliary_qubits": 705,
+      "total_physical_qubits": 2383
     },
     {
       "lift": 33,
@@ -109,24 +109,24 @@
     {
       "lift": 33,
       "method": "gauging",
-      "total_qubits": 4125,
-      "checks_x": 2079,
+      "total_qubits": 4290,
+      "checks_x": 2244,
       "checks_z": 1947,
       "restored_flux_checks": 0,
       "data_qubits": 1122,
-      "auxiliary_qubits": 3003,
-      "total_physical_qubits": 8151
+      "auxiliary_qubits": 3168,
+      "total_physical_qubits": 8481
     },
     {
       "lift": 33,
       "method": "edge_expansion",
-      "total_qubits": 4125,
-      "checks_x": 2077,
+      "total_qubits": 4323,
+      "checks_x": 2275,
       "checks_z": 1947,
       "restored_flux_checks": 64,
       "data_qubits": 1122,
-      "auxiliary_qubits": 3003,
-      "total_physical_qubits": 8149
+      "auxiliary_qubits": 3201,
+      "total_physical_qubits": 8545
     }
   ]
 }

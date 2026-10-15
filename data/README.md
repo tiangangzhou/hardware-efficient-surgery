@@ -12,7 +12,17 @@ Frozen inputs and published results read by the scripts in `scripts/`.
 - `space_overhead.json` — physical-qubit counts of the bottom panel of Fig. 3.
 - `gadgets/l{9,15,33}_{gauging,edge_expansion}.npz` — the Graph-WY / Graph-IGND
   gadgets (merged check matrices and mapping-cone maps) for one canonical logical,
-  rebuilt and checked by `scripts/shuttling/build_graph_gadgets.py`.
+  rebuilt and checked by `scripts/shuttling/build_graph_gadgets.py`; the animation
+  records their SHA-256. Algorithm 1 adds edges until the Cheeger constant of each
+  auxiliary graph is h ≥ 1, and the script recomputes h exactly over all cuts
+  (enumeration up to 20 vertices, an integer program above) for all six gadgets.
+  Above 20 vertices (l = 15, 33) the edges added follow the Fiedler sweep cuts (from
+  both ends, so not the eigenvector sign) and the integer program's choice among
+  equally violated cuts, so another numpy/LAPACK or HiGHS build may add different
+  edges, still with h ≥ 1; numpy 2.5.4 (Accelerate, macOS arm64) and scipy 1.18.1
+  reproduce these files exactly. `compute_space_overhead.py` reads the files themselves.
+  Earlier versions stopped once the sweep cuts alone reached 1, which left exact
+  h = 0.6–0.82 at l = 15, 33 for both methods.
 
 The three shuttling scripts compare their results with these files; `--write` regenerates
 them.

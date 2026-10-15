@@ -13,8 +13,10 @@ the data checks (Algorithm 2). If d0 is too heavy, it restarts from the restrict
 hypergraph, splits hyperedges into weight-two edges, and cellulates long cycles.
 Deterministic choices replace the paper's open ones:
 
-- Cheeger constants are exact for |V| <= 20; above, they are estimated from the
-  sweep cuts of the Fiedler vector, so h >= 1 is then not certified;
+- Cheeger constants are exact: all cuts are enumerated for |V| <= 20, and above an
+  integer program (HiGHS) finds the sparsest cut. Above 20 vertices Algorithm 1 works
+  with the Fiedler sweep cuts and the violated cuts found so far, and stops only when
+  the integer program finds no cut with |dS| < |S|, so h >= 1 always holds exactly;
 - Algorithm 2's random search is replaced by a greedy minimum-weight basis drawn
   from Horton's candidate cycles (J. D. Horton, SIAM J. Comput. 16, 358 (1987));
 - a hyperedge is split by a matching that first joins different components;
@@ -26,15 +28,17 @@ from __future__ import annotations
 import collections
 import itertools
 import math
+from fractions import Fraction
 
 import networkx as nx
 import numpy as np
 from qldpc.codes.common import CSSCode
 from qldpc.objects import PauliXZ
+from scipy.optimize import Bounds, LinearConstraint, milp
 
 from .gadget import GF2, XorBasis, bitmask, complementary_checks
 
-_EXACT_CHEEGER_MAX_V = 20  # exact enumeration of all 2^|V| cuts up to this size
+_EXACT_CHEEGER_MAX_V = 20  # all 2^|V| cuts are enumerated up to this size, above an ILP
 
 
 def restrict_maps(H: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -65,31 +69,63 @@ def _all_cuts(n_v: int) -> np.ndarray:
 
 
 def _fiedler_sweep_cuts(incidence: np.ndarray) -> np.ndarray:
-    """Prefix sets (1 <= |S| <= |V|/2) of the vertices sorted by the Fiedler vector of
-    the graph Laplacian, with every hyperedge expanded into a clique."""
+    """Prefix and suffix sets (1 <= |S| <= |V|/2) of the vertices sorted by the Fiedler
+    vector of the graph Laplacian, with every hyperedge expanded into a clique. Sweeping
+    from both ends makes the cuts independent of the sign LAPACK gives the vector."""
     adjacency = incidence.T.astype(np.float64) @ incidence
     np.fill_diagonal(adjacency, 0)
     laplacian = np.diag(adjacency.sum(axis=1)) - adjacency
     order = np.argsort(np.linalg.eigh(laplacian)[1][:, 1], kind="stable")
     n_v = incidence.shape[1]
-    cuts = np.zeros((n_v // 2, n_v), np.uint8)
-    for k in range(n_v // 2):
-        cuts[k:, order[k]] = 1
+    half = n_v // 2
+    cuts = np.zeros((2 * half, n_v), np.uint8)
+    for k in range(half):
+        cuts[k:half, order[k]] = 1
+        cuts[half + k :, order[-1 - k]] = 1
     return cuts
 
 
+def _min_cut_excess(incidence: np.ndarray, ratio: Fraction) -> tuple[Fraction, np.ndarray]:
+    """min |dS| - ratio |S| over 1 <= |S| <= |V|/2 and a minimising S, by an integer
+    program in s_v = [v in S], y_e = [e in dS] and k_e, with |e & S| = 2 k_e + y_e."""
+    n_e, n_v = incidence.shape
+    p, q = ratio.numerator, ratio.denominator
+    cost = np.r_[np.full(n_v, -p), np.full(n_e, q), np.zeros(n_e)]  # q |dS| - p |S|
+    parity = LinearConstraint(np.hstack([incidence, -np.eye(n_e), -2 * np.eye(n_e)]), 0, 0)
+    size = LinearConstraint(np.r_[np.ones(n_v), np.zeros(2 * n_e)], 1, n_v // 2)
+    upper = np.r_[np.ones(n_v + n_e), incidence.sum(axis=1) // 2]
+    result = milp(
+        cost,
+        constraints=[parity, size],
+        integrality=np.ones(len(cost)),
+        bounds=Bounds(0, upper),
+        options={"mip_rel_gap": 0},
+    )
+    if not result.success:
+        raise RuntimeError(f"Cheeger integer program failed: {result.message}")
+    S = np.round(result.x[:n_v]).astype(np.uint8)
+    return int(_cut_sizes(incidence, S[None])[0]) - ratio * int(S.sum()), S
+
+
 def sparsest_cut(incidence: np.ndarray) -> tuple[float, np.ndarray]:
-    """(h, S): the Cheeger constant h = min_{1 <= |S| <= |V|/2} |dS|/|S| (Eq. (3)) and
-    the first minimising S, exact for |V| <= 20 and over the Fiedler sweep cuts above."""
+    """(h, S): the Cheeger constant h = min_{1 <= |S| <= |V|/2} |dS|/|S| (Eq. (3)) and a
+    minimising S, both exact: the first S of a Gray-code enumeration for |V| <= 20, above
+    Dinkelbach's iteration of the integer program from the best Fiedler sweep cut."""
     inc = np.asarray(incidence, np.uint8)
     n_v = inc.shape[1]
     if n_v < 2:
         return math.inf, np.zeros(n_v, np.uint8)
     if n_v > _EXACT_CHEEGER_MAX_V:
         cuts = _fiedler_sweep_cuts(inc)
-        ratios = _cut_sizes(inc, cuts) / cuts.sum(axis=1)
-        best = int(np.argmin(ratios))
-        return float(ratios[best]), cuts[best].copy()
+        counts, sizes = _cut_sizes(inc, cuts), cuts.sum(axis=1)
+        best = int(np.argmin(counts / sizes))
+        h, S = Fraction(int(counts[best]), int(sizes[best])), cuts[best].copy()
+        while h > 0:  # each step finds a cut of smaller ratio, until none exists
+            excess, cut = _min_cut_excess(inc, h)
+            if excess >= 0:
+                break
+            h, S = Fraction(int(_cut_sizes(inc, cut[None])[0]), int(cut.sum())), cut
+        return float(h), S
     # Gray-code walk over all subsets, updating the bit-packed dS by one XOR per step.
     columns = [bitmask(column) for column in inc.T]
     best, best_mask, mask, boundary = math.inf, 0, 0, 0
@@ -112,7 +148,10 @@ def algorithm_1(incidence: np.ndarray, *, max_extra: int = 200) -> np.ndarray:
 
     Each step takes a sparsest cut S and adds, among the edges joining a minimum-degree
     vertex of S to a minimum-degree vertex outside S, the first one that maximises the
-    new Cheeger constant.
+    new Cheeger constant. Up to 20 vertices this runs over all cuts. Above, it runs over
+    the known cuts (the Fiedler sweep cuts of the current graph and every violated cut
+    found so far); once all have |dS| >= |S|, the integer program of ``sparsest_cut``
+    looks for a cut with |dS| < |S|, and the loop stops only when there is none.
     """
     E = np.array(incidence, np.uint8)
     n_v = E.shape[1]
@@ -122,16 +161,23 @@ def algorithm_1(incidence: np.ndarray, *, max_extra: int = 200) -> np.ndarray:
     if exact:
         cuts = _all_cuts(n_v)
         counts = _cut_sizes(E, cuts)
+    violated = np.zeros((0, n_v), np.uint8)
     for added in itertools.count():
-        if not exact:  # the sweep cuts depend on the graph
-            cuts = _fiedler_sweep_cuts(E)
+        while not exact:  # the sweep cuts depend on the graph
+            cuts = np.unique(np.vstack([_fiedler_sweep_cuts(E), violated]), axis=0)
             counts = _cut_sizes(E, cuts)
+            if (counts < cuts.sum(axis=1)).any():
+                break
+            excess, cut = _min_cut_excess(E, Fraction(1))
+            if excess >= 0:
+                return E  # certified: no cut has |dS| < |S|
+            violated = np.vstack([violated, cut])
         sizes = cuts.sum(axis=1)
-        if (counts / sizes).min() >= 1.0:
+        if (counts >= sizes).all():
             return E
         if added == max_extra:
             raise RuntimeError(f"Algorithm 1 exceeded max_extra={max_extra}")
-        S = sparsest_cut(E)[1]
+        S = sparsest_cut(E)[1] if exact else cuts[np.argmin(counts / sizes)]
         degree = E.sum(axis=0)
         inside, outside = np.flatnonzero(S), np.flatnonzero(S == 0)
         h_best, best = -math.inf, None

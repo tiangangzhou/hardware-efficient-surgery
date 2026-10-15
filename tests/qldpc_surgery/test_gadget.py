@@ -35,8 +35,7 @@ def test_gadget_is_a_mapping_cone_measuring_one_logical(make_code, basis, method
     product = product[len(H_meas) :].sum(axis=0) % 2
     assert np.array_equal(product, np.r_[x, np.zeros(len(d1), np.uint8)])
     assert merged_code(g).dimension == code.dimension - 1
-    if method == "edge_expansion":
-        assert cheeger_constant(g.incidence) >= 1
+    assert cheeger_constant(g.incidence) >= 1  # exact: the deformed code keeps the distance
 
 
 @pytest.mark.parametrize("method", ["edge_expansion", "gauging"])

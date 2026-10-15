@@ -54,7 +54,7 @@ script takes seconds and checks or prints the published numbers.
 | Algebraic adapters with unequal lifts | `scripts/codes/adapters.py` |
 | QDistRnd distance table | `scripts/codes/qdistrnd.py summarize` |
 | Table S2 (shuttling and gate times) | `scripts/shuttling/extract_timings.py` |
-| Graph-WY / Graph-IGND gadgets | `scripts/shuttling/build_graph_gadgets.py` |
+| Graph-WY / Graph-IGND gadgets, exact Cheeger constants h ≥ 1 (~2 min) | `scripts/shuttling/build_graph_gadgets.py` |
 | Fig. 3 qubit counts / figure | `scripts/shuttling/compute_space_overhead.py`, `scripts/shuttling/plot_fig3.py` |
 | Fig. 4 (l = 33 LER by basis) | `scripts/ler/l33/plot_fig4.py` |
 | Effective distances 15.9 and 22.8 | `scripts/ler/l33/fit_effective_distance.py` |
