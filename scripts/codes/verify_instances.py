@@ -106,7 +106,8 @@ def exhaustive(case: SurgeryInstance, hx, hz, out: Path, binary: Path) -> str:
         path = out / f"l{ell}_{sector}.dat"
         write_input(path, hx, hz, sector, ell, d - 1)
         proved = f"PROVED_NO_LOGICAL_WEIGHT_LE {d - 1} first 0 last {n // ell}"
-        assert run_search(binary, path, time_limit=3600).get("summary") == proved
+        outcome = run_search(binary, path, time_limit=3600)
+        assert outcome.get("summary") == proved, outcome
     return f"no logical of weight < {d} in either sector"
 
 

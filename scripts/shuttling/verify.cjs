@@ -4,12 +4,13 @@
 //    times in us), within the schedule, each atom at most once;
 //  - gates: 1 us matchings within the schedule, at 2 um docking distance when replayed;
 //  - no atom or AOD pair is in two operations at once;
-//  - every check edge of `source` is applied once per basis and round;
+//  - every check edge of `source` is applied once per measured basis (`model.measurement`:
+//    X, Z or all) and round, and every measured basis and round has its gates;
 //  - atoms return to their home fibre slots (single round) or labelled homes (parallel).
 // Parallel X/Z schedules over r rounds (`model.rounds`) must also read out each round after
 // its gates, start the next round after reset, keep check assignments fixed within a round,
 // keep X/Z rounds non-interleaved on every data atom, restore homes after the last readout
-// and actually overlap X and Z.
+// and actually overlap X and Z (two moves of different bases overlapping by more than 1 us).
 const assert = require('assert/strict');
 const EPS = 1e-5;
 
@@ -63,6 +64,9 @@ function verify(model, source) {
     model.atoms.forEach((atom, i) => { add(slots, atom, atom.slice(0, 2)); add(final, atom, positions[i]); });
     for (const [key, points] of slots) assert.deepEqual(final.get(key).sort(), points.sort(), 'Returned to same fibre slots');
   }
+  const bases = model.rounds || model.measurement === 'all' ? ['X', 'Z'] : [model.measurement];
+  const keys = bases.flatMap(basis => Array.from({length: model.rounds || 1}, (_, r) => basis + ':' + (r + 1)));
+  assert.deepEqual([...edges.keys()].sort(), keys.sort(), 'Gates for every measured basis and round');
   for (const [key, applied] of edges) {
     const expected = source.gates.filter(g => g.basis === key[0]).flatMap(g => g.edges.map(e => e.join(':')));
     assert.deepEqual(applied.sort(), expected.sort(), 'Per-round check incidence');
@@ -89,6 +93,14 @@ function verify(model, source) {
     for (let i = 1; i < ops.length; i++) assert(ops[i].rank >= ops[i - 1].rank, 'Noninterleaved X/Z round order on data');
   }
   assert(model.pipeline.finalRestoreStart >= Math.max(...model.readouts.map(r => r.end)) - EPS, 'Restore after readout');
-  assert(model.parallelWitness, 'Actual X/Z overlap');
+  // Moves sorted by start time; a later-starting move overlaps a only if it starts before a ends.
+  const basisOf = move => model.tasks?.[move[6]]?.basis;
+  const timed = model.moves.filter(basisOf).sort((a, b) => a[0] - b[0]);
+  const overlap = timed.some((a, i) => {
+    for (let j = i + 1; j < timed.length && timed[j][0] < a[0] + a[1] - 1; j++)
+      if (basisOf(timed[j]) !== basisOf(a) && Math.min(a[0] + a[1], timed[j][0] + timed[j][1]) - timed[j][0] > 1) return true;
+    return false;
+  });
+  assert(overlap, 'Actual X/Z overlap');
 }
 module.exports = verify;

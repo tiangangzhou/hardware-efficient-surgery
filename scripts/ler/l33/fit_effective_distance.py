@@ -109,7 +109,7 @@ def main() -> None:
 
             middle = [r for r in pairs[1] if basis in ("Average", r["basis"])]  # p = P0
             start = sum(r["errors"] / r["num_shots"] for r in middle) / len(middle)
-            b, low, high, residual = fit(cost, start)
+            b, low, high, residual = fit(cost, max(start, 1e-9))  # a positive start for log C
             d, lo, hi = 2 * b - 1, 2 * low - 1, 2 * high - 1
             print(
                 f"{experiment:>10} {basis:>7} {b:6.2f} {d:6.1f} "

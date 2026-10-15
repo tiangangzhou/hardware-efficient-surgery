@@ -8,7 +8,7 @@ Modules, in dependency order:
 * ``canonical``: aligned information sets and canonical kernel generators u_i;
 * ``tube``: tube factors D and selected factors A' of the auxiliary code LP(A', D);
 * ``distance`` (+ ``exhaustive.cpp``): exhaustive minimum-weight logical search;
-* ``examples.lifted_product``, ``examples.surgery_instances``: the paper's codes.
+* ``examples.surgery_instances``: LP(A, A^dagger) codes and the paper's instances I-III.
 """
 
 __all__ = (

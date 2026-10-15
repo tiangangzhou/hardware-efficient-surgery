@@ -35,7 +35,7 @@ from qldpc.circuits.noise_model import NoiseModel
 from qldpc.codes.common import CSSCode
 from qldpc.objects import Pauli, PauliXZ
 
-from ..hmatrix.gadget import GF2
+from ..hmatrix.gadget import GF2, GadgetSpec, gf2_rank
 
 # Coordinate lanes (y) of the qubits; x is the position within the lane.
 DATA, AUX, X_CHECK, NEW_X_CHECK, Z_CHECK, NEW_Z_CHECK, ADAPTER, ADAPTER_CHECK = range(8)
@@ -93,13 +93,32 @@ def _opposite_checks(merged_code: CSSCode, experiment_basis: PauliXZ) -> np.ndar
 
 
 def _gf2_solve(A: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """The solution of A c = b over GF(2) with all free variables zero (b in the image)."""
+    """The solution of A c = b over GF(2) with all free variables zero; raises if b is not in
+    the image (a block logical without frame correction)."""
     reduced = np.asarray(GF2(np.hstack([A, b.reshape(-1, 1)])).row_reduce())
     c = np.zeros(A.shape[1], np.uint8)
     for row in reduced:
         if (pivots := np.flatnonzero(row[:-1])).size:
             c[pivots[0]] = row[-1]
+        elif row[-1]:
+            raise ValueError("a block logical has no frame correction on the auxiliary qubits")
     return c
+
+
+def require_single_readout(gadget: GadgetSpec) -> None:
+    """Raise unless the product of all new checks of ``gadget`` is its only readout and equals
+    the logical on ``gadget.x``: ker d1 = {0, 1} (a connected graph) and f1 1 = x."""
+    ones = np.ones(gadget.f1.shape[1], np.uint8)
+    incidence = gadget.incidence.astype(np.int_)
+    if (
+        gf2_rank(incidence) != len(ones) - 1
+        or (incidence @ ones % 2).any()
+        or not np.array_equal(gadget.f1.astype(np.int_) @ ones % 2, gadget.x)
+    ):
+        raise ValueError(
+            "the new checks must read out gadget.x alone (ker d1 = {0, 1}); "
+            "use build_batch_ppm_circuit for gadgets with readout vectors"
+        )
 
 
 def _frame_corrected_support(

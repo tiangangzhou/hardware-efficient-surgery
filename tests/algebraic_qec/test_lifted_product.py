@@ -1,37 +1,32 @@
-"""LP(A, A^dagger) codes, checked against Cain et al. (arXiv:2603.28627) and qldpc."""
+"""LP(A, A^dagger) codes of instances I-III and Cain et al. (arXiv:2603.28627), checked
+against qldpc."""
 
 import numpy as np
+import pytest
 
-from algebraic_qec.examples.lifted_product import CAIN_LP_CODES
-
-# name -> (l, n, k): n = l (n_A^2 + m_A^2); k from the binary ranks.
-PARAMETERS = {
-    "lp^{3,5}_{20}": (33, 1122, 148),
-    "lp^{3,7}_{16}": (45, 2610, 744),
-    "lp^{3,7}_{20}": (75, 4350, 1224),
-    "lp^{3,7}_{24}": (91, 5278, 1480),
-}
+from algebraic_qec.examples.surgery_instances import lifted_product_code
+from tests.algebraic_qec.fixtures import LP_CODES
 
 
-def test_parameters_and_check_weights():
-    for spec in CAIN_LP_CODES:
-        code = spec.build()
-        assert (spec.period, code.n, code.k) == PARAMETERS[spec.name]
-        rows, cols = len(spec.seed), len(spec.seed[0])
-        assert code.k >= (cols - rows) ** 2 * spec.period
-        for binary in (code.binary_matrix_x, code.binary_matrix_z):
-            assert set(np.asarray(binary.sum(axis=1)).ravel()) == {rows + cols}
+@pytest.mark.parametrize("ell, seed, k", LP_CODES.values(), ids=LP_CODES)
+def test_parameters_and_check_weights(ell, seed, k):
+    code = lifted_product_code(ell, seed)
+    rows, cols = len(seed), len(seed[0])
+    assert (code.n, code.k) == (ell * (rows**2 + cols**2), k)
+    assert code.k >= (cols - rows) ** 2 * ell
+    for binary in (code.binary_matrix_x, code.binary_matrix_z):
+        assert set(np.asarray(binary.sum(axis=1)).ravel()) == {rows + cols}
 
 
-def test_lifts_match_qldpc():
+@pytest.mark.parametrize("ell, seed, k", LP_CODES.values(), ids=LP_CODES)
+def test_lifts_match_qldpc(ell, seed, k):
     """qldpc lifts x^e to our P(-e) = P(e)^T, so its protograph uses the negated exponents."""
     from qldpc import abstract, codes
 
-    for spec in CAIN_LP_CODES:
-        group = abstract.CyclicGroup(spec.period)
-        g = group.generators[0]
-        seed = [[abstract.Element(group, g ** (-e)) for e in row] for row in spec.seed]
-        theirs = codes.LPCode(abstract.Protograph(seed))
-        ours = spec.build()
-        assert np.array_equal(ours.binary_matrix_x.toarray(), np.asarray(theirs.matrix_x) % 2)
-        assert np.array_equal(ours.binary_matrix_z.toarray(), np.asarray(theirs.matrix_z) % 2)
+    group = abstract.CyclicGroup(ell)
+    g = group.generators[0]
+    protograph = [[abstract.Element(group, g ** (-e)) for e in row] for row in seed]
+    theirs = codes.LPCode(abstract.Protograph(protograph))
+    ours = lifted_product_code(ell, seed)
+    assert np.array_equal(ours.binary_matrix_x.toarray(), np.asarray(theirs.matrix_x) % 2)
+    assert np.array_equal(ours.binary_matrix_z.toarray(), np.asarray(theirs.matrix_z) % 2)

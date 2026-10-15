@@ -12,14 +12,8 @@ from qldpc.objects import Pauli
 
 from algebraic_qec import CyclicPolynomial, PolynomialMatrix, RingDecomposition, gf2_rank
 from algebraic_qec.canonical import aligned_information_set, systematic_kernel_generators
-from algebraic_qec.examples.lifted_product import CAIN_LP_CODES
-from algebraic_qec.tube import (
-    component_ranks,
-    extend_factor,
-    lp33_tube_factor,
-    maximal_minors,
-    unit_columns,
-)
+from algebraic_qec.examples.surgery_instances import instance
+from algebraic_qec.tube import component_ranks, extend_factor, maximal_minors, unit_columns
 from qldpc_surgery.hmatrix.gadget import GadgetSpec
 
 
@@ -33,14 +27,24 @@ def lift(matrix: PolynomialMatrix) -> np.ndarray:
 
 def data_code() -> CSSCode:
     """The [[1122, 148]] LP code of instance III (the idling baseline)."""
-    code = CAIN_LP_CODES[0].build()
+    code = instance(33).data_code()
     return css_code(lift(code.matrix_x), lift(code.matrix_z))
+
+
+def tube_factor() -> PolynomialMatrix:
+    """The 4 x 5 D of instance III (SM Eq. (s-lp33-seed-tube)) with columns reordered as
+    (2, 0, 4, 3, 1), so that it couples at its column 0 (= SM column q = 2).  This only
+    relabels auxiliary qubits."""
+    d = instance(33).factor_d
+    order = (2, 0, 4, 3, 1)
+    entries = {(i, k): d[i, j] for i in range(d.shape[0]) for k, j in enumerate(order)}
+    return PolynomialMatrix(33, d.shape, entries)
 
 
 def surgery_maps() -> dict[str, np.ndarray]:
     """Fibre surgery on fibre (3, 3) of the l = 33 code, H_L = e_4^T.
 
-    D is ``lp33_tube_factor()``, the D printed in the Supplemental Material with permuted
+    D is ``tube_factor()``, the D printed in the Supplemental Material with permuted
     columns (the same merged code up to a relabelling of auxiliary qubits; this ordering
     generated the published data).  The coupled coordinate q, the first unit entry of the
     kernel generator t of D (its maximal minors), is q = 0 here and the SM's q = 2.  The
@@ -50,15 +54,15 @@ def surgery_maps() -> dict[str, np.ndarray]:
     any of them is wrong).
     """
     alpha = beta = 3
-    code = CAIN_LP_CODES[0].build()
+    code = instance(33).data_code()
     ell = code.period
-    a = PolynomialMatrix.from_monomials(ell, CAIN_LP_CODES[0].seed)
+    a = instance(33).factor_a
     decomposition = RingDecomposition(ell)
     m_a, n_a = a.shape
     aligned = aligned_information_set(a, n_a - m_a, decomposition)
     other = next(j for j in aligned if j != alpha)
     a_sel = extend_factor(a, [tuple(int(j == other) for j in range(n_a))])  # A' = [A; e_4]
-    d = lp33_tube_factor()
+    d = tube_factor()
     m_d, n_d = d.shape
     assert component_ranks(d, decomposition) == [m_d] * len(decomposition.factors)
     q = unit_columns(maximal_minors(d), decomposition)[0]

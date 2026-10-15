@@ -64,8 +64,8 @@ JOINTS = {
         "matrix_x": "22f411647406920fcaba9301b71acd35413d4f6f01de5514cfd3fd68895e0c2f",
         "matrix_z": "47c449d93e1524346fa39f5fe1e69869541dd944bd6b165a2d067bc71cff584a",
     },
-    "intra BB36 Z": {
-        "matrix_x": "9952e1a9d032965806f7647a10e1675379c0793113d2950c04e444193d203be1",
+    "intra BB36 Z": {  # regenerated when the bridge kept the gadgets' sparse cycle checks
+        "matrix_x": "3ef41e7af948ff0ae0009de36a48d34e3290ebca4ff29f33a4e58ea594208f44",
         "matrix_z": "9e080edee296e3d7cfe42a84991989e1a43ef87741f8dd7260efe7585098a8a7",
     },
     "intra Steane X": {

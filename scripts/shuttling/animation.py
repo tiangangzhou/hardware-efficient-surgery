@@ -17,6 +17,9 @@ from packing import canonical_destinations, compact_destinations, decode, encode
 
 DOCUMENT = Path(__file__).resolve().parents[2] / "lp-surgery-aod-polynomials.html"
 
+if not __debug__:  # the scripts here check their results with assert statements
+    raise SystemExit("scripts/shuttling verify with assert statements: run them without -O")
+
 
 def fragment(document: Path = DOCUMENT) -> str:
     """The unescaped player embedded in the page."""

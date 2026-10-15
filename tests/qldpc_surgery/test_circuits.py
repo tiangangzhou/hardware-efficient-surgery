@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 from qldpc import codes
 from qldpc.circuits import DepolarizingNoiseModel
 from qldpc.objects import Pauli
-from scipy.linalg import block_diag
 
 from qldpc_surgery import (
     build_batch_ppm_circuit,
@@ -16,6 +14,7 @@ from qldpc_surgery import (
     build_joint_ppm_circuit,
     build_single_ppm_circuit,
     check_noiseless,
+    parallel_gadgets,
 )
 from qldpc_surgery.hmatrix.gadget import GadgetSpec
 from tests.qldpc_surgery.fixtures import (
@@ -36,18 +35,7 @@ def gadget(code, basis, i=0, method="edge_expansion"):
 
 def batch_gadget(code, basis) -> GadgetSpec:
     """Two single gadgets side by side, measuring two logicals at once."""
-    g0, g1 = gadget(code, basis, 0), gadget(code, basis, 1)
-    return GadgetSpec.from_maps(
-        code,
-        g0.x,
-        basis=basis,
-        f1=np.hstack([g0.f1, g1.f1]),
-        incidence=block_diag(g0.incidence, g1.incidence),
-        f0=np.hstack([g0.f0, g1.f0]),
-        partial_0=block_diag(g0.partial_0, g1.partial_0),
-        batch_x=np.stack([g0.x, g1.x]),
-        readout_vectors=block_diag(np.ones(g0.f1.shape[1]), np.ones(g1.f1.shape[1])),
-    )
+    return parallel_gadgets([gadget(code, basis, 0), gadget(code, basis, 1)])
 
 
 @pytest.mark.parametrize("method", ["edge_expansion", "gauging"])

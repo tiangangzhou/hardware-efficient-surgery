@@ -84,10 +84,13 @@ def run_search(binary: Path, input_path: Path, time_limit: float = 600) -> dict:
 
 
 def sector_distance(hx, hz, sector: str, period: int, bounds: range, out_dir: Path, binary):
-    """Exact sector distance: search with W = bounds[0], bounds[1], ... until a witness.
+    """Exact sector distance: search with W = bounds[0], bounds[0] + 1, ... until a witness.
 
-    The first bound must be proved; then the first witness has weight exactly W.
+    The first bound must be proved; then the first witness has weight exactly W, because
+    W - 1 was proved (hence ``bounds`` must be consecutive).
     """
+    if bounds.step != 1:
+        raise ValueError(f"bounds must be consecutive, got {bounds}")
     n = hx.shape[1]
     for bound in bounds:
         path = out_dir / f"{sector}_w{bound}.dat"
@@ -96,7 +99,10 @@ def sector_distance(hx, hz, sector: str, period: int, bounds: range, out_dir: Pa
         if outcome["status"] == "witness":
             if bound == bounds[0]:
                 raise RuntimeError(f"{sector}: a logical of weight <= {bound}; start lower")
-            assert len(outcome["witness"]) == bound
+            if len(outcome["witness"]) != bound:
+                raise RuntimeError(
+                    f"{sector}: witness of weight {len(outcome['witness'])} != {bound}"
+                )
             return dict(distance=bound, witness=sorted(outcome["witness"]))
         complete = f"PROVED_NO_LOGICAL_WEIGHT_LE {bound} first 0 last {n // period}"
         if outcome.get("summary") != complete:

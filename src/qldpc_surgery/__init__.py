@@ -8,9 +8,8 @@
 - ``hmatrix.joint``: the bridge (repetition-code adapter) of Swaroop, Jochym-O'Connor,
   Yoder (arXiv:2410.03628) for joint measurements;
 - ``circuit``: Stim circuits for single, batch and joint measurements;
-- ``decoding`` and ``batched``: Relay-BP with a BP-LSD fallback, synchronous or in two
-  stages;
-- ``aod``: gate layers and check routes of the graph gadgets for the shuttling model.
+- ``decoding`` and ``delay_decoding``: Relay-BP with a BP-LSD fallback, synchronous or in two
+  stages.
 """
 
 from __future__ import annotations

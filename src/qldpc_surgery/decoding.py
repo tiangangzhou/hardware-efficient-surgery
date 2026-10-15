@@ -66,7 +66,7 @@ class TieredRelayDecoder:
     check matrix with ``error_channel``.
 
     ``decode_relay_batch`` runs T1 and ``decode_deferred_batch`` finishes its output with
-    T2, so the tiers can run as separate jobs (``batched.py``); ``decode_batch`` does
+    T2, so the tiers can run as separate jobs (``delay_decoding.py``); ``decode_batch`` does
     both. ``fallback=False`` disables T2, ``lsd_kwargs`` overrides entries of
     ``LSD_KWARGS``, and ``relay_kwargs`` go to Relay-BP (relay-bp's defaults otherwise).
     ``parallel`` multithreads Relay-BP over the shots of a batch.

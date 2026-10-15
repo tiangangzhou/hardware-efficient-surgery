@@ -1,4 +1,4 @@
-"""Two-stage batched decoding of sharded sampling campaigns (cluster runs of Fig. 4).
+"""Delayed two-stage decoding of sharded sampling campaigns (cluster runs of Fig. 4).
 
 A task is sampled in independent shards, each decoded in two stages that can run as
 separate jobs:
@@ -9,10 +9,10 @@ separate jobs:
 2. ``finalize_shard`` decodes those syndromes with BP-LSD (``LSD_KWARGS``).
 
 The decoder chain is that of :func:`qldpc_surgery.decoding.sinter_decoder`; only the
-scheduling differs.  Each stage writes one ``.npz`` per shard and skips shards already
-on disk, so both stages can be restarted.  The seed of a shard depends only on the task
-and the shard index.  ``merge_shards`` adds the finalized shards of a task into
-``sinter.TaskStats``.
+scheduling differs.  Each stage writes one ``.npz`` per shard (``relay-NNNN.npz``,
+``final-NNNN.npz``; ``shard_paths`` lists them) and skips shards already on disk, so both
+stages can be restarted.  The seed of a shard depends only on the task and the shard index.
+``merge_shards`` adds the finalized shards of a task into ``sinter.TaskStats``.
 """
 
 from __future__ import annotations
@@ -52,9 +52,25 @@ def _failures(actual: np.ndarray, corrections: np.ndarray, observables) -> Count
 
 
 def _save(path: Path, **arrays) -> None:
-    tmp = path.with_suffix(f".{os.getpid()}.tmp.npz")
-    np.savez_compressed(tmp, **arrays)
-    os.replace(tmp, path)
+    """Write atomically, through a hidden temporary file that ``shard_paths`` never lists."""
+    tmp = path.with_name(f".{path.stem}.{os.getpid()}.tmp.npz")
+    try:
+        np.savez_compressed(tmp, **arrays)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def shard_paths(directory: Path, stage: str) -> dict[int, Path]:
+    """{shard: file} of the ``stage`` ("relay" or "final") files ``<stage>-NNNN.npz`` of a task
+    directory, in shard order; other files (e.g. temporary ones) are ignored."""
+    paths = {}
+    for path in Path(directory).glob(f"{stage}-*.npz"):
+        index = path.stem.removeprefix(f"{stage}-")
+        if index.isdigit():
+            paths[int(index)] = path
+    return dict(sorted(paths.items()))
 
 
 def _load(path: Path, task: sinter.Task) -> dict:
@@ -134,7 +150,7 @@ def merge_shards(task: sinter.Task, directory: Path) -> sinter.TaskStats:
     for the shots passed to BP-LSD and ``shards``.
     """
     shots, seconds, counts = 0, 0.0, Counter()
-    for path in sorted(Path(directory).glob("final-*.npz")):
+    for path in shard_paths(directory, "final").values():
         shard = _load(path, task)
         relay = Counter(json.loads(str(shard["relay_failures"])))
         lsd = Counter(json.loads(str(shard["lsd_failures"])))

@@ -8,16 +8,15 @@ from algebraic_qec.examples.surgery_instances import SURGERY_INSTANCES
 from algebraic_qec.tube import (
     component_ranks,
     extend_factor,
-    lp33_tube_factor,
     maximal_minors,
     tube_kernel_generator,
     unit_columns,
 )
 
-TUBES = [(c.factor_d, c.couple_column) for c in SURGERY_INSTANCES] + [(lp33_tube_factor(), 0)]
+TUBES = [(c.factor_d, c.couple_column) for c in SURGERY_INSTANCES]
 
 
-@pytest.mark.parametrize("d, q", TUBES, ids=["l9", "l15", "l33", "l33-benchmark"])
+@pytest.mark.parametrize("d, q", TUBES, ids=["l9", "l15", "l33"])
 def test_tube_kernel_is_free_of_rank_one_with_unit_coordinate(d, q):
     dec, (m, n) = RingDecomposition(d.period), d.shape
     assert component_ranks(d, dec) == [m] * len(dec.factors)

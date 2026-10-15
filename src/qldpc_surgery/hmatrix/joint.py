@@ -19,8 +19,9 @@ graphs connected, no other product of them is free of auxiliary qubits, so only
 X_l X_r is measured.
 
 Each side's port subgraph is first made connected and its basis cycles are cut to at
-most ``cellulate_max_len`` by chords; the added edges are appended to the gadget,
-whose cycle checks are then recomputed as a basis of all cycles. Paths run through
+most ``cellulate_max_len`` by chords between far-apart cycle vertices; the added edges
+are appended to the gadget, whose cycle checks are then completed by the lightest
+independent cycles to a basis of all cycles. Paths run through
 weight-two edges only, so hyperedge rows of d1 get zero columns in T. No distance
 guarantee (Lemma 9 needs w >= d and relative expansion) is checked here.
 """
@@ -35,7 +36,8 @@ from qldpc.codes.common import CSSCode
 from qldpc.objects import Pauli, PauliXZ
 from scipy.linalg import block_diag
 
-from .gadget import GF2, GadgetSpec, basis_matrices
+from .edge_expansion import algorithm_2
+from .gadget import GadgetSpec, XorBasis, basis_matrices, bitmask
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -83,16 +85,20 @@ def _connect(graph: nx.Graph, ports: tuple[int, ...]) -> list[tuple[int, int]]:
 
 
 def _cellulate(graph: nx.Graph, ports: tuple[int, ...], max_len: int) -> list[tuple[int, int]]:
-    """Add chords until every basis cycle of the port subgraph has length <= max_len."""
+    """Add chords until every basis cycle of the port subgraph has length <= max_len.
+
+    A long cycle is cut by a missing chord between vertices as far apart along it as
+    possible (opposite ones first), so the chords do not pile up on one vertex.
+    """
     added = []
     while long := [c for c in nx.cycle_basis(graph.subgraph(ports)) if len(c) > max_len]:
-        cycle = long[0]
+        cycle, k = long[0], len(long[0])
         chord = next(
             (
-                tuple(sorted((cycle[i], cycle[j])))
-                for i in range(len(cycle))
-                for j in range(i + 2, len(cycle))
-                if not graph.has_edge(cycle[i], cycle[j])
+                tuple(sorted((cycle[i], cycle[(i + gap) % k])))
+                for gap in range(k // 2, 1, -1)
+                for i in range(k)
+                if not graph.has_edge(cycle[i], cycle[(i + gap) % k])
             ),
             None,
         )
@@ -165,12 +171,21 @@ def _skiptree(
 
 
 def _append_edges(g: GadgetSpec, edges: np.ndarray) -> GadgetSpec:
-    """Gadget with weight-two edges appended to d1 (zero f0 columns) and d0 recomputed
-    as a basis of all cycles, ker d1^T."""
+    """Gadget with weight-two edges appended to d1 (zero f0 columns) and its cycle checks
+    completed to a basis of all cycles, ker d1^T, by the lightest independent cycles.
+
+    The cycles that the data checks generate in the single gadget are needed once the
+    gadget shares data with a second one, as in ``gauging._restore_flux_checks``.
+    """
     incidence = np.vstack([g.incidence, edges]).astype(np.uint8)
-    partial_0 = np.asarray(GF2(incidence).left_null_space(), np.uint8)
-    f0 = np.hstack([g.f0, np.zeros((len(g.f0), len(edges)), np.uint8)])
-    return dataclasses.replace(g, incidence=incidence, f0=f0, partial_0=partial_0)
+    pad = lambda m: np.hstack([m, np.zeros((len(m), len(edges)), np.uint8)])
+    span, cycles = XorBasis(), list(pad(g.partial_0))
+    for row in cycles:
+        span.add(bitmask(row))
+    no_checks = np.zeros((0, 0), np.uint8), np.zeros((0, len(incidence)), np.uint8)
+    cycles += [row for row in algorithm_2(incidence, *no_checks) if span.add(bitmask(row))]
+    partial_0 = np.array(cycles, np.uint8).reshape(-1, len(incidence))
+    return dataclasses.replace(g, incidence=incidence, f0=pad(g.f0), partial_0=partial_0)
 
 
 def build_bridge(

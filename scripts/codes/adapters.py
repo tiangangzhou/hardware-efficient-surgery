@@ -34,8 +34,7 @@ from common import column, readout_images, residuals
 from algebraic_qec import CyclicPolynomial, PolynomialMatrix, RingDecomposition
 from algebraic_qec.bitmask import Rowspace, mask, nullspace_basis, orbit_masks, row_masks, set_bits
 from algebraic_qec.canonical import aligned_information_set, systematic_kernel_generators
-from algebraic_qec.examples.lifted_product import lifted_product_code
-from algebraic_qec.examples.surgery_instances import instance
+from algebraic_qec.examples.surgery_instances import instance, lifted_product_code
 
 J = (3, 4)
 SEED_11 = ((0, 0, 0, 0, 0), (0, 6, 6, 0, 4), (0, 8, 7, 6, 4))  # aligned information set J

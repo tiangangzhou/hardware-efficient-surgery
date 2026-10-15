@@ -7,7 +7,8 @@ import pytest
 
 from algebraic_qec import CyclicPolynomial as P
 from algebraic_qec import PolynomialMatrix, RingDecomposition, gf2_rank, kernel
-from algebraic_qec.examples.lifted_product import CAIN_LP_CODES
+from algebraic_qec.examples.surgery_instances import lifted_product_code
+from tests.algebraic_qec.fixtures import LP_CODES
 
 
 @pytest.mark.parametrize("ell", [3, 9, 15, 33])
@@ -54,9 +55,10 @@ def assert_kernel_matches_binary(matrix: PolynomialMatrix) -> None:
     assert span == matrix.shape[1] * matrix.period - gf2_rank(binary)
 
 
-@pytest.mark.parametrize("spec", CAIN_LP_CODES[:2], ids=lambda s: s.name)
-def test_kernel_of_lp_checks(spec):
-    assert_kernel_matches_binary(spec.build().matrix_x)
+@pytest.mark.parametrize("name", ["l9", "l15", "l33", "lp^{3,7}_{16}"])
+def test_kernel_of_lp_checks(name):
+    ell, seed, _ = LP_CODES[name]
+    assert_kernel_matches_binary(lifted_product_code(ell, seed).matrix_x)
 
 
 def test_kernel_of_random_matrices():

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import itertools
 
-from algebraic_qec.examples.surgery_instances import instance
 from algebraic_qec.polymatrix import PolynomialMatrix
 from algebraic_qec.polynomial import CyclicPolynomial
 from algebraic_qec.ring_kernel import RingDecomposition
@@ -66,16 +65,6 @@ def tube_kernel_generator(
     minors = maximal_minors(factor)
     scale = dec.inverse(minors[couple_column, 0])
     return minors @ PolynomialMatrix(factor.period, (1, 1), {(0, 0): scale})
-
-
-def lp33_tube_factor() -> PolynomialMatrix:
-    """The l = 33 tube used by the circuit benchmark: the 4 x 5 D of instance III (SM Eq.
-    (s-lp33-seed-tube)) with columns reordered as (2, 0, 4, 3, 1), so that it couples at its
-    column 0 (= SM column q = 2).  This only relabels auxiliary qubits."""
-    d = instance(33).factor_d
-    order = (2, 0, 4, 3, 1)
-    entries = {(i, k): d[i, j] for i in range(d.shape[0]) for k, j in enumerate(order)}
-    return PolynomialMatrix(33, d.shape, entries)
 
 
 def extend_factor(base: PolynomialMatrix, rows: list[tuple[int, ...]]) -> PolynomialMatrix:

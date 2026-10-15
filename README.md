@@ -19,7 +19,8 @@ src/                         reusable code
   qldpc_surgery/             CSS surgery on top of qldpc: graph-based gadgets (Graph-WY gauging,
                              Graph-IGND edge expansion), bridges for joint measurements,
                              Stim circuits for single / joint / batch PPMs,
-                             Relay-BP + BP-LSD decoder and its batched two-stage driver
+                             Relay-BP + BP-LSD decoder and its delayed two-stage driver
+                             (delay_decoding)
 scripts/                     one script per result of the paper
   codes/                     code constructions and distances (Supplemental Material)
   shuttling/                 shuttling times and qubit counts (Fig. 3, Table S2)
@@ -88,7 +89,19 @@ uv run pytest -m "not slow"
 
 ## Citation
 
-If you use this code, please cite the paper above.
+If you find this code helpful, you can cite this paper
+
+```latex
+@misc{zhou2026parallelalgebraicsurgeryqldpc,
+      title={Parallel algebraic surgery for qLDPC codes with constant shuttling depth}, 
+      author={Tian-Gang Zhou and Boren Gu and Jens Eisert and Chen Zhao},
+      year={2026},
+      eprint={2609.39874},
+      archivePrefix={arXiv},
+      primaryClass={quant-ph},
+      url={https://arxiv.org/abs/2609.39874}, 
+}
+```
 
 ## License
 

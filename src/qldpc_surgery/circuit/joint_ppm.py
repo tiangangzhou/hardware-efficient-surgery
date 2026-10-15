@@ -1,7 +1,7 @@
 """Surgery circuit measuring X_l X_r (or Z_l Z_r) through a bridge (``hmatrix.joint``).
 
 The two gadgets act on two codes (data qubits of the left code first) or on the
-same code. Observables as in ``single_ppm``: in the match basis the k_l + k_r (or k)
+same code. Observables as in ``low_rate_ppm``: in the match basis the k_l + k_r (or k)
 block logicals and one time-like observable, the product of all new vertex checks
 of both gadgets; in the opposite basis the block logicals commuting with the
 measured product.
@@ -18,7 +18,7 @@ from scipy.linalg import block_diag
 
 from ..hmatrix.gadget import GadgetSpec
 from ..hmatrix.joint import JointSpec, joint_merged_code
-from .engine import commuting_logicals, surgery_circuit
+from .engine import commuting_logicals, require_single_readout, surgery_circuit
 
 
 def build_joint_ppm_circuit(
@@ -36,10 +36,12 @@ def build_joint_ppm_circuit(
     """(circuit, merged code) of the joint measurement.
 
     ``data_init`` is a string over all data qubits or, for two codes, a pair of
-    strings, one per code (each may be a single broadcast character). See
-    ``engine.surgery_circuit`` for the other arguments; ``experiment_basis`` defaults
-    to ``bridge.basis``.
+    strings, one per code (each may be a single broadcast character). Each gadget must
+    read out its ``x`` alone (a connected graph). See ``engine.surgery_circuit`` for the
+    other arguments; ``experiment_basis`` defaults to ``bridge.basis``.
     """
+    for g in (g_l, g_r):
+        require_single_readout(g)
     if experiment_basis is None:
         experiment_basis = bridge.basis
     merged = joint_merged_code(g_l, g_r, bridge)

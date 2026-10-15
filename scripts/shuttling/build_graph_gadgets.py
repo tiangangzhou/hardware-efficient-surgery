@@ -23,13 +23,13 @@ from pathlib import Path
 
 import numpy as np
 from animation import fragment, graph_models, write_graph_models
+from aod import compile_check_round
 from qldpc.codes.common import CSSCode
 from qldpc.objects import Pauli
 
 from algebraic_qec import gf2_rank
 from algebraic_qec.examples.surgery_instances import instance
 from qldpc_surgery import build_gadget, cheeger_constant
-from qldpc_surgery.aod import compile_check_round
 
 GADGETS = Path(__file__).resolve().parents[2] / "data" / "shuttling" / "gadgets"
 

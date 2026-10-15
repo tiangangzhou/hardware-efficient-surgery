@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from qldpc_surgery.aod import compile_check_round, matching_layers
+from tests.scripts.helpers import load
+
+aod = load("shuttling/aod.py")
+compile_check_round, matching_layers = aod.compile_check_round, aod.matching_layers
 
 
 def test_matching_layers_cover_every_edge_once_in_delta_layers() -> None:

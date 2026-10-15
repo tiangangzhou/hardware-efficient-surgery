@@ -67,7 +67,8 @@ def deviance(errors: int, shots: int, q: float) -> float:
     The no-failure term uses log1p, which keeps it accurate at rates ~1e-8.
     """
     if not 0 < q < 1:
-        return float("inf")
+        # At q = 0 or 1 the likelihood vanishes unless every shot agrees with q (then q = f).
+        return 0.0 if q in (0, 1) and errors == q * shots else float("inf")
     f = errors / shots
     rest = (shots - errors) * (np.log1p(-f) - np.log1p(-q)) if errors < shots else 0.0
     return float(2 * (xlogy(errors, f) - xlogy(errors, q) + rest))

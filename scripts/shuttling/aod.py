@@ -6,8 +6,8 @@ implementation). ``compile_check_round`` splits the X and then the Z Tanner grap
 into Delta matchings (Delta = maximum check or qubit degree, Koenig's edge colouring)
 and gives, for each matching, the slot of every check atom: a matched check moves to
 its qubit's slot, an unmatched one is parked beyond the data register, and vacancies
-fill the remaining slots. The shuttling animation (``scripts/shuttling``) times these
-rearrangements.
+fill the remaining slots. ``build_graph_gadgets.py`` checks these layers against the
+graph models embedded in the shuttling animation, which times the rearrangements.
 """
 
 from __future__ import annotations

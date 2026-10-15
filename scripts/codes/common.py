@@ -14,6 +14,9 @@ from algebraic_qec.bitmask import Rowspace, nullspace_basis, row_masks
 
 DATA = Path(__file__).resolve().parents[2] / "data" / "codes"
 
+if not __debug__:  # the scripts here check their results with assert statements
+    raise SystemExit("scripts/codes verify with assert statements: run them without -O")
+
 
 def column(polys: list[CyclicPolynomial]) -> PolynomialMatrix:
     """The column vector with these entries."""

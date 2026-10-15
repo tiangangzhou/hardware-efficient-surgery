@@ -36,8 +36,8 @@ CHUNK = 2_000
 
 def sample(code, basis: str, p: float, max_shots: int, max_errors: int, rng) -> tuple[int, int]:
     """(shots, logical failures) of one (code, basis, p) point."""
-    pauli = Pauli.Z if basis == "Z" else Pauli.X
-    h = np.asarray(code.matrix_z if basis == "Z" else code.matrix_x, dtype=np.uint8)
+    pauli = getattr(Pauli, basis)
+    h = np.asarray(code.matrix_z if pauli is Pauli.Z else code.matrix_x, dtype=np.uint8)
     logicals = np.asarray(code.get_logical_ops(pauli), dtype=np.uint8)
     decoder = BpLsdDecoder(csr_matrix(h), error_channel=[p] * h.shape[1], **LSD_KWARGS)
     shots = failures = 0
@@ -52,24 +52,28 @@ def sample(code, basis: str, p: float, max_shots: int, max_errors: int, rng) -> 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--codes", default="mem,merged", help="mem (bare) and/or merged")
-    parser.add_argument("--basis", default="X,Z")
+    parser.add_argument("--codes", default="mem,merged", help="mem (the bare code) and/or merged")
+    parser.add_argument("--basis", default="X,Z", help="X and/or Z")
     parser.add_argument("--p-list", default="0.015,0.02,0.03,0.04,0.05")
     parser.add_argument("--shots", type=int, default=100_000, help="shot cap per point")
     parser.add_argument("--max-errors", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, required=True, help="CSV to append to")
     args = parser.parse_args()
+    names = [name.strip() for name in args.codes.split(",")]
+    bases = [basis.strip() for basis in args.basis.split(",")]
+    if not set(names) <= {"mem", "merged"} or not set(bases) <= {"X", "Z"}:
+        parser.error(f"--codes must list mem/merged and --basis X/Z, got {names} and {bases}")
     rng = np.random.default_rng(args.seed)
     new_file = not args.out.exists()
     with args.out.open("a", newline="") as stream:
         writer = csv.writer(stream)
         if new_file:
             writer.writerow(["code", "basis", "p", "seed", "shots", "errors", "seconds"])
-        for name in args.codes.split(","):
+        for name in names:
             code = data_code() if name == "mem" else css_code(*merged_checks())
             print(f"{name}: [[{code.num_qudits}, {code.dimension}]]", flush=True)
-            for basis in args.basis.split(","):
+            for basis in bases:
                 for p in map(float, args.p_list.split(",")):
                     start = time.time()
                     shots, fails = sample(code, basis, p, args.shots, args.max_errors, rng)

@@ -1,4 +1,4 @@
-"""Relay-BP with the BP-LSD fallback, synchronous and in two stages (``batched``)."""
+"""Relay-BP with the BP-LSD fallback, synchronous and in two stages (``delay_decoding``)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import sinter
 import stim
 from qldpc.decoders import DetectorErrorModelArrays
 
-from qldpc_surgery.batched import collect_shard, finalize_shard, merge_shards, shard_seed
 from qldpc_surgery.decoding import RELAY_KWARGS, TieredRelayDecoder, sinter_decoder
+from qldpc_surgery.delay_decoding import collect_shard, finalize_shard, merge_shards, shard_seed
 
 # One check on two equally likely errors: min-sum BP cannot break the symmetry, so this
 # truncated Relay-BP does not converge.
@@ -70,7 +70,7 @@ def test_sinter_decoder_corrects_single_errors() -> None:
     )
 
 
-def test_batched_stages_match_synchronous_decoding(tmp_path) -> None:
+def test_delayed_stages_match_synchronous_decoding(tmp_path) -> None:
     task, shots = surface_code_task(), 500
     for shard in (1, 2):
         collect_shard(task, tmp_path, shard, shots, batch_size=200)
