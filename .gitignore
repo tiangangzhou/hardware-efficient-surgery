@@ -17,3 +17,6 @@ scratch/
 .DS_Store
 .idea/
 .vscode/
+
+#docs
+docs/
